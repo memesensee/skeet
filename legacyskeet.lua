@@ -17,7 +17,7 @@ local Tabs = {
     Vis = Window:AddTab('Visual'),
     sk = Window:AddTab('Sky'),
     serve = Window:AddTab('Server'),
-    U = Window:AddTab('UI'),
+    Targett = Window:AddTab('Target'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
@@ -340,6 +340,94 @@ UIS.InputEnded:Connect(function(input, gpe)
     end
 end)
 
+local Floating = false
+local floatName = game:GetService("HttpService"):GenerateGUID(false)
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+
+local FloatPart
+local FloatValue = -3.1
+local FloatConn, qUp, eUp, qDown, eDown, floatDied
+
+
+-- функция вкл/выкл
+local function SetFloat(state, speaker)
+Floating = state
+
+
+if state then
+local pchar = speaker.Character
+if pchar and not pchar:FindFirstChild(floatName) then
+FloatPart = Instance.new("Part")
+FloatPart.Name = floatName
+FloatPart.Parent = pchar
+FloatPart.Transparency = 1
+FloatPart.Size = Vector3.new(2,0.2,1.5)
+FloatPart.Anchored = true
+
+
+FloatValue = -3.1
+FloatPart.CFrame = pchar.HumanoidRootPart.CFrame * CFrame.new(0,FloatValue,0)
+
+
+-- управление
+qUp = UserInputService.InputEnded:Connect(function(input)
+if input.KeyCode == Enum.KeyCode.Q then
+FloatValue += 0.5
+end
+end)
+eUp = UserInputService.InputEnded:Connect(function(input)
+if input.KeyCode == Enum.KeyCode.E then
+FloatValue -= 1.5
+end
+end)
+qDown = UserInputService.InputBegan:Connect(function(input)
+if input.KeyCode == Enum.KeyCode.Q then
+FloatValue -= 0.5
+end
+end)
+eDown = UserInputService.InputBegan:Connect(function(input)
+if input.KeyCode == Enum.KeyCode.E then
+FloatValue += 1.5
+end
+end)
+
+
+floatDied = pchar:FindFirstChildOfClass("Humanoid").Died:Connect(function()
+SetFloat(false, speaker)
+end)
+
+
+FloatConn = RunService.Heartbeat:Connect(function()
+if pchar and pchar:FindFirstChild("HumanoidRootPart") and pchar:FindFirstChild(floatName) then
+FloatPart.CFrame = pchar.HumanoidRootPart.CFrame * CFrame.new(0,FloatValue,0)
+else
+SetFloat(false, speaker)
+end
+end)
+end
+else
+-- отключение
+if FloatConn then FloatConn:Disconnect() end
+if qUp then qUp:Disconnect() end
+if eUp then eUp:Disconnect() end
+if qDown then qDown:Disconnect() end
+if eDown then eDown:Disconnect() end
+if floatDied then floatDied:Disconnect() end
+if FloatPart then FloatPart:Destroy() end
+end
+end
+
+-- Toggle Anti-aim
+MovementBox:AddToggle('AntiAimTogsgle', {
+    Text = 'Float',
+    Default = false,
+    Callback = function(Value)
+    local speaker = game.Players.LocalPlayer
+    SetFloat(Value, speaker)
+    end
+})
 
 local flyEnabled = false
 local flySpeed = 30 -- базовая скорость
@@ -1525,8 +1613,6 @@ local function onCharacterAdded(newCharacter)
 		restoreOriginalAssets()
 	end
 
-	-- Цвет должен применяться всегда (включая когда ForceField включён)
-	updateColor(currentColor)
 
 	-- На смерть ничего особого делать не нужно — CharacterAdded сработает при респавне
 end
@@ -2028,63 +2114,73 @@ servee:AddButton('Rejoin', function()
        end
 end)
 
-local UU = Tabs.U:AddLeftGroupbox('Server')
+local Target = Tabs.Targett:AddLeftGroupbox('Target')
 
-local StarterGui = game:GetService("StarterGui")
+-- Services
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
-UU:AddToggle("Health", {
-    Text = "Hide Health",
-    Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, not Value)
-        -- если Value = true → спрятать, если false → показать
+-- функция для списка игроков по алфавиту
+local function GetPlayerNames()
+    local names = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            table.insert(names, plr.Name)
+        end
+    end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    return names
+end
+
+local SelectedPlayer = nil
+
+-- Dropdown игроков
+local PlayerDD = Target:AddDropdown("PlayerList", {
+    Values = GetPlayerNames(),
+    Default = "",
+    Multi = false,
+    Text = "Player Target",
+    Callback = function(value)
+        SelectedPlayer = Players:FindFirstChild(value)
     end
 })
 
-UU:AddToggle("PlayerList", {
-    Text = "Hide PlayerList",
+-- авто-обновление списка
+local function RefreshDropdown()
+    local vals = GetPlayerNames()
+    if #vals == 0 then vals = { "<no players>" } end
+    PlayerDD:SetValues(vals)
+end
+Players.PlayerAdded:Connect(RefreshDropdown)
+Players.PlayerRemoving:Connect(RefreshDropdown)
+
+-- Toggle: "Spectate" (камера привязывается)
+local FollowToggle = Target:AddToggle("FollowToggle", {
+    Text = "Spectate Target",
     Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, not Value)
-        -- если Value = true → спрятать, если false → показать
+    Callback = function(state)
+        if state then
+            if SelectedPlayer and SelectedPlayer.Character and SelectedPlayer.Character:FindFirstChild("Humanoid") then
+                Camera.CameraSubject = SelectedPlayer.Character:FindFirstChild("Humanoid")
+            end
+        else
+            -- возвращаем камеру себе
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                Camera.CameraSubject = LocalPlayer.Character:FindFirstChild("Humanoid")
+            end
+        end
     end
 })
 
-UU:AddToggle("Backpack", {
-    Text = "Hide Backpack",
-    Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, not Value)
-        -- если Value = true → спрятать, если false → показать
+-- Button: телепорт на голову
+Target:AddButton("Teleport To Head", function()
+    if SelectedPlayer and SelectedPlayer.Character and SelectedPlayer.Character:FindFirstChild("Head") 
+       and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        LocalPlayer.Character.HumanoidRootPart.CFrame =
+            SelectedPlayer.Character.Head.CFrame + Vector3.new(0, 2, 0)
     end
-})
-
-UU:AddToggle("Chat", {
-    Text = "Hide Chat",
-    Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, not Value)
-        -- если Value = true → спрятать, если false → показать
-    end
-})
-
-UU:AddToggle("EmotesMenu", {
-    Text = "Hide EmotesMenu",
-    Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, not Value)
-        -- если Value = true → спрятать, если false → показать
-    end
-})
-
-UU:AddToggle("All", {
-    Text = "Hide All Core UI",
-    Default = false,
-    Callback = function(Value)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not Value)
-        -- если Value = true → спрятать, если false → показать
-    end
-})
+end)
 
 local FrameTimer = tick()
 local FrameCounter = 0;
