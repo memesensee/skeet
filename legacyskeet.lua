@@ -1,804 +1,443 @@
+-- init
+if not game:IsLoaded() then 
+    game.Loaded:Wait()
+end
+
+if not syn or not protectgui then
+    getgenv().protectgui = function() end
+end
+
+local SilentAimSettings = {
+    Enabled = false,
+    
+    ClassName = "Universal Silent Aim - Averiias, Stefanuk12, xaxa",
+    ToggleKey = "RightAlt",
+    
+    TeamCheck = false,
+    VisibleCheck = false, 
+    TargetPart = "HumanoidRootPart",
+    SilentAimMethod = "Raycast",
+    
+    FOVRadius = 130,
+    FOVVisible = false,
+    ShowSilentAimTarget = false, 
+    
+    MouseHitPrediction = false,
+    MouseHitPredictionAmount = 0.165,
+    HitChance = 100
+}
+
+-- variables
+getgenv().SilentAimSettings = Settings
+local MainFileName = "UniversalSilentAim"
+local SelectedFile, FileToSave = "", ""
+
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+local GetChildren = game.GetChildren
+local GetPlayers = Players.GetPlayers
+local WorldToScreen = Camera.WorldToScreenPoint
+local WorldToViewportPoint = Camera.WorldToViewportPoint
+local GetPartsObscuringTarget = Camera.GetPartsObscuringTarget
+local FindFirstChild = game.FindFirstChild
+local RenderStepped = RunService.RenderStepped
+local GuiInset = GuiService.GetGuiInset
+local GetMouseLocation = UserInputService.GetMouseLocation
+
+local resume = coroutine.resume 
+local create = coroutine.create
+
+local ValidTargetParts = {"Head", "HumanoidRootPart"}
+local PredictionAmount = 0.165
+
+local mouse_box = Drawing.new("Square")
+mouse_box.Visible = true 
+mouse_box.ZIndex = 999 
+mouse_box.Color = Color3.fromRGB(54, 57, 241)
+mouse_box.Thickness = 20 
+mouse_box.Size = Vector2.new(20, 20)
+mouse_box.Filled = true 
+
+local fov_circle = Drawing.new("Circle")
+fov_circle.Thickness = 1
+fov_circle.NumSides = 100
+fov_circle.Radius = 180
+fov_circle.Filled = false
+fov_circle.Visible = false
+fov_circle.ZIndex = 999
+fov_circle.Transparency = 1
+fov_circle.Color = Color3.fromRGB(54, 57, 241)
+
+local ExpectedArguments = {
+    FindPartOnRayWithIgnoreList = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Ray", "table", "boolean", "boolean"
+        }
+    },
+    FindPartOnRayWithWhitelist = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Ray", "table", "boolean"
+        }
+    },
+    FindPartOnRay = {
+        ArgCountRequired = 2,
+        Args = {
+            "Instance", "Ray", "Instance", "boolean", "boolean"
+        }
+    },
+    Raycast = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Vector3", "Vector3", "RaycastParams"
+        }
+    }
+}
+
+function CalculateChance(Percentage)
+    -- // Floor the percentage
+    Percentage = math.floor(Percentage)
+
+    -- // Get the chance
+    local chance = math.floor(Random.new().NextNumber(Random.new(), 0, 1) * 100) / 100
+
+    -- // Return
+    return chance <= Percentage / 100
+end
+
+
+--[[file handling]] do 
+    if not isfolder(MainFileName) then 
+        makefolder(MainFileName);
+    end
+    
+    if not isfolder(string.format("%s/%s", MainFileName, tostring(game.PlaceId))) then 
+        makefolder(string.format("%s/%s", MainFileName, tostring(game.PlaceId)))
+    end
+end
+
+local Files = listfiles(string.format("%s/%s", "UniversalSilentAim", tostring(game.PlaceId)))
+
+-- functions
+local function GetFiles() -- credits to the linoria lib for this function, listfiles returns the files full path and its annoying
+	local out = {}
+	for i = 1, #Files do
+		local file = Files[i]
+		if file:sub(-4) == '.lua' then
+			-- i hate this but it has to be done ...
+
+			local pos = file:find('.lua', 1, true)
+			local start = pos
+
+			local char = file:sub(pos, pos)
+			while char ~= '/' and char ~= '\\' and char ~= '' do
+				pos = pos - 1
+				char = file:sub(pos, pos)
+			end
+
+			if char == '/' or char == '\\' then
+				table.insert(out, file:sub(pos + 1, start - 1))
+			end
+		end
+	end
+	
+	return out
+end
+
+local function UpdateFile(FileName)
+    assert(FileName or FileName == "string", "oopsies");
+    writefile(string.format("%s/%s/%s.lua", MainFileName, tostring(game.PlaceId), FileName), HttpService:JSONEncode(SilentAimSettings))
+end
+
+local function LoadFile(FileName)
+    assert(FileName or FileName == "string", "oopsies");
+    
+    local File = string.format("%s/%s/%s.lua", MainFileName, tostring(game.PlaceId), FileName)
+    local ConfigData = HttpService:JSONDecode(readfile(File))
+    for Index, Value in next, ConfigData do
+        SilentAimSettings[Index] = Value
+    end
+end
+
+local function getPositionOnScreen(Vector)
+    local Vec3, OnScreen = WorldToScreen(Camera, Vector)
+    return Vector2.new(Vec3.X, Vec3.Y), OnScreen
+end
+
+local function ValidateArguments(Args, RayMethod)
+    local Matches = 0
+    if #Args < RayMethod.ArgCountRequired then
+        return false
+    end
+    for Pos, Argument in next, Args do
+        if typeof(Argument) == RayMethod.Args[Pos] then
+            Matches = Matches + 1
+        end
+    end
+    return Matches >= RayMethod.ArgCountRequired
+end
+
+local function getDirection(Origin, Position)
+    return (Position - Origin).Unit * 1000
+end
+
+local function getMousePosition()
+    return GetMouseLocation(UserInputService)
+end
+
+local function IsPlayerVisible(Player)
+    local PlayerCharacter = Player.Character
+    local LocalPlayerCharacter = LocalPlayer.Character
+    
+    if not (PlayerCharacter or LocalPlayerCharacter) then return end 
+    
+    local PlayerRoot = FindFirstChild(PlayerCharacter, Options.TargetPart.Value) or FindFirstChild(PlayerCharacter, "HumanoidRootPart")
+    
+    if not PlayerRoot then return end 
+    
+    local CastPoints, IgnoreList = {PlayerRoot.Position, LocalPlayerCharacter, PlayerCharacter}, {LocalPlayerCharacter, PlayerCharacter}
+    local ObscuringObjects = #GetPartsObscuringTarget(Camera, CastPoints, IgnoreList)
+    
+    return ((ObscuringObjects == 0 and true) or (ObscuringObjects > 0 and false))
+end
+
+local function getClosestPlayer()
+    if not Options.TargetPart.Value then return end
+    local Closest
+    local DistanceToMouse
+    for _, Player in next, GetPlayers(Players) do
+        if Player == LocalPlayer then continue end
+        if Toggles.TeamCheck.Value and Player.Team == LocalPlayer.Team then continue end
+
+        local Character = Player.Character
+        if not Character then continue end
+        
+        if Toggles.VisibleCheck.Value and not IsPlayerVisible(Player) then continue end
+
+        local HumanoidRootPart = FindFirstChild(Character, "HumanoidRootPart")
+        local Humanoid = FindFirstChild(Character, "Humanoid")
+        if not HumanoidRootPart or not Humanoid or Humanoid and Humanoid.Health <= 0 then continue end
+
+        local ScreenPosition, OnScreen = getPositionOnScreen(HumanoidRootPart.Position)
+        if not OnScreen then continue end
+
+        local Distance = (getMousePosition() - ScreenPosition).Magnitude
+        if Distance <= (DistanceToMouse or Options.Radius.Value or 2000) then
+            Closest = ((Options.TargetPart.Value == "Random" and Character[ValidTargetParts[math.random(1, #ValidTargetParts)]]) or Character[Options.TargetPart.Value])
+            DistanceToMouse = Distance
+        end
+    end
+    return Closest
+end
+
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Window = Library:CreateWindow({
-    Title = 'gamesense.lua',
-    Center = true,
-    AutoShow = true,
-    TabPadding = 8,
-    MenuFadeTime = 0
-})
-
-local Tabs = {
-    Main = Window:AddTab('Main'),
-    Vis = Window:AddTab('Visual'),
-    sk = Window:AddTab('Sky'),
-    serve = Window:AddTab('Server'),
-    Targett = Window:AddTab('Target'),
-    ['UI Settings'] = Window:AddTab('UI Settings'),
-}
-
--- // Anti-Aim System
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local lp = Players.LocalPlayer
-
-local angle = 0
-local direction = 1
-local lastYaw = 0
-local spinAngle = 0
-local jitterDir = 1
-
--- настройки из UI
-local AntiAimEnabled = false
-local AntiAimMode = "180" -- дефолт = лицом к камере
-_G.isBunnyHopEnabled = _G.isBunnyHopEnabled or false -- глобальная переменная из BHop скрипта
-
--- отслеживаем пробел
-local isSpaceHeld = false
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if not gpe and input.KeyCode == Enum.KeyCode.Space then
-        isSpaceHeld = true
-    end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.Space then
-        isSpaceHeld = false
-    end
-end)
-
--- // 🔹 Linoria UI
-local Aimbox = Tabs.Main:AddLeftGroupbox('Anti-Aim')
-
-Aimbox:AddToggle('AntiAimToggle', {
-    Text = 'Anti-aim',
-    Default = false,
-    Callback = function(Value)
-        AntiAimEnabled = Value
-
-        if not Value then
-            local char = lp.Character
-            if char then
-                local humanoid = char:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    humanoid.AutoRotate = true
-                end
-            end
-        end
-    end
-})
-
-Aimbox:AddDropdown('AntiAimModeDD', {
-    Values = { 'aa back', '180', 'spin', 'jitter' },
-    Default = '180',
-    Multi = false,
-    Text = 'Anti-aim mode',
-    Callback = function(Value)
-        AntiAimMode = Value
-    end
-})
-
--- // основной цикл
-RunService.RenderStepped:Connect(function()
-    if not AntiAimEnabled then return end
-
-    local char = lp.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not humanoid then return end
-
-    humanoid.AutoRotate = false
-
-    -- 🟢 если банихоп включен И зажат пробел → отключаем анти-аим (но AutoRotate не трогаем)
-    if _G.isBunnyHopEnabled and isSpaceHeld then
-        return
-    end
-
-    local camCF = workspace.CurrentCamera.CFrame
-    local lookVector = camCF.LookVector
-    local yaw = math.atan2(-lookVector.X, -lookVector.Z)
-
-    if AntiAimMode == "aa back" then
-        angle = angle + direction * 2.5
-        if angle > 25 then
-            direction = -1
-        elseif angle < -25 then
-            direction = 1
-        end
-
-        local targetCF = CFrame.new(hrp.Position) * CFrame.Angles(0, yaw + math.pi + math.rad(angle), 0)
-
-        local deltaYaw = math.deg(math.abs(yaw - lastYaw))
-        if deltaYaw > 180 then
-            deltaYaw = 360 - deltaYaw
-        end
-
-        if deltaYaw > 30 then
-            hrp.CFrame = targetCF
-        else
-            hrp.CFrame = hrp.CFrame:Lerp(targetCF, 0.15)
-        end
-
-    elseif AntiAimMode == "180" then
-        local targetCF = CFrame.new(hrp.Position) * CFrame.Angles(0, yaw + math.pi, 0)
-        hrp.CFrame = hrp.CFrame:Lerp(targetCF, 0.2)
-
-    elseif AntiAimMode == "spin" then
-        spinAngle = spinAngle + math.rad(10)
-        local targetCF = CFrame.new(hrp.Position) * CFrame.Angles(0, spinAngle, 0)
-        hrp.CFrame = hrp.CFrame:Lerp(targetCF, 0.3)
-
-    elseif AntiAimMode == "jitter" then
-        jitterDir = -jitterDir
-        local targetCF = CFrame.new(hrp.Position) * CFrame.Angles(0, yaw + math.pi + math.rad(jitterDir * 20), 0)
-        hrp.CFrame = targetCF
-    end
-
-    lastYaw = yaw
-end)
-
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local lp = Players.LocalPlayer
-
-local AntiAimEnabled = false
-
--- функция поиска ближайшего игрока
-local function GetClosestPlayer()
-    local closestPlayer = nil
-    local shortestDistance = math.huge
-
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= lp and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local distance = (player.Character.HumanoidRootPart.Position - lp.Character.HumanoidRootPart.Position).Magnitude
-            if distance < shortestDistance then
-                shortestDistance = distance
-                closestPlayer = player
-            end
-        end
-    end
-    return closestPlayer
-end
-
--- Toggle Anti-aim
-Aimbox:AddToggle('AntiAimToggle', {
-    Text = 'LookAtPlayer',
-    Default = false,
-    Callback = function(Value)
-        AntiAimEnabled = Value
-
-        local char = lp.Character
-        if char then
-            local humanoid = char:FindFirstChildOfClass("Humanoid")
-            if humanoid then
-                humanoid.AutoRotate = not Value -- выключаем автоповорот, если вкл
-            end
-        end
-    end
-})
-
--- цикл поворота
-RunService.RenderStepped:Connect(function()
-    if not AntiAimEnabled then return end
-    local char = lp.Character
-    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-
-    local closest = GetClosestPlayer()
-    if closest and closest.Character and closest.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = char.HumanoidRootPart
-        local targetPos = closest.Character.HumanoidRootPart.Position
-
-        -- сохраняем уровень по Y (чтобы не смотрел вверх/вниз)
-        local lookVector = Vector3.new(targetPos.X, hrp.Position.Y, targetPos.Z)
-        hrp.CFrame = CFrame.new(hrp.Position, lookVector)
-    end
-end)
-
--- // WalkSpeed Boost (TP-style movement)
-local uis = game:GetService("UserInputService")
-local runService = game:GetService("RunService")
-local player = game.Players.LocalPlayer
-local hrp
-
-player.CharacterAdded:Connect(function(char)
-    hrp = char:WaitForChild("HumanoidRootPart")
-end)
-
-if player.Character then
-    hrp = player.Character:WaitForChild("HumanoidRootPart")
-end
-
--- Состояние кнопок
-local moving = {
-    W = false,
-    S = false,
-    A = false,
-    D = false,
-}
-
--- Обработка нажатия
-uis.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.W then moving.W = true end
-    if input.KeyCode == Enum.KeyCode.S then moving.S = true end
-    if input.KeyCode == Enum.KeyCode.A then moving.A = true end
-    if input.KeyCode == Enum.KeyCode.D then moving.D = true end
-end)
-
--- Обработка отпускания
-uis.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.W then moving.W = false end
-    if input.KeyCode == Enum.KeyCode.S then moving.S = false end
-    if input.KeyCode == Enum.KeyCode.A then moving.A = false end
-    if input.KeyCode == Enum.KeyCode.D then moving.D = false end
-end)
-
--- // 🔹 Linoria UI
-local MovementBox = Tabs.Main:AddLeftGroupbox('Movement')
-
-MovementBox:AddSlider('WalkTPSpeed', {
-    Text = 'WalkSpeed Boost',
-    Default = 0,
-    Min = 0,
-    Max = 100,
-    Rounding = 0,
-    Suffix = "%",
-    Callback = function(Value)
-        getgenv().WalkTPSpeed = Value
-    end
-})
-
--- Плавное движение
-runService.RenderStepped:Connect(function(dt)
-    if hrp and getgenv().WalkTPSpeed and getgenv().WalkTPSpeed > 0 then
-        local cam = workspace.CurrentCamera
-        local moveVec = Vector3.zero
-
-        -- Берём векторы камеры, обнуляем Y (движение только по земле)
-        local forward = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
-        local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
-
-        if moving.W then moveVec = moveVec + forward end
-        if moving.S then moveVec = moveVec - forward end
-        if moving.A then moveVec = moveVec - right end
-        if moving.D then moveVec = moveVec + right end
-
-        if moveVec.Magnitude > 0 then
-            local step = moveVec.Unit * getgenv().WalkTPSpeed * dt
-            hrp.CFrame = hrp.CFrame + step
-        end
-    end
-end)
-
--- // JumpPower Slider (Loop)
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local lp = Players.LocalPlayer
-
-getgenv().JumpPowerValue = 0
-
-MovementBox:AddSlider('JumpPowerSlider', {
-    Text = 'JumpPower',
-    Default = 50,
-    Min = 0,
-    Max = 250,
-    Rounding = 0,
-    Suffix = "",
-    Callback = function(Value)
-        getgenv().JumpPowerValue = Value
-    end
-})
-
--- == Instant Teleport to mouse (Linoria) ==
-local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
-
--- функция телепорта
-local function InstantTP()
-    local character = LocalPlayer.Character
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    local mouse = LocalPlayer:GetMouse()
-    if mouse and mouse.Target then
-        local pos = mouse.Hit.Position
-        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) -- слегка выше земли
-    end
-end
-
--- кейпикер (идёт ПЕРВЫМ элементом)
-MovementBox:AddLabel('Teleport on mouse')
-    :AddKeyPicker('TeleportKey', {
-        Default = 'C',        -- стартовый ключ
-        Mode = 'Trigger',     -- нам нужен одноразовый триггер
-        Text = 'Teleport Key',
-        NoUI = false
+local Window = Library:CreateWindow({Title = 'skeet.lua', Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0})
+local GeneralTab = Window:AddTab("Combat")
+local MainBOX = GeneralTab:AddLeftTabbox("Main") do
+    local Main = MainBOX:AddTab("Main")
+    
+    Main:AddToggle("aim_Enabled", {Text = "Enabled"}):AddKeyPicker("aim_Enabled_KeyPicker", {Default = "RightAlt", SyncToggleState = true, Mode = "Toggle", Text = "Enabled", NoUI = false});
+    Options.aim_Enabled_KeyPicker:OnClick(function()
+        SilentAimSettings.Enabled = not SilentAimSettings.Enabled
+        
+        Toggles.aim_Enabled.Value = SilentAimSettings.Enabled
+        Toggles.aim_Enabled:SetValue(SilentAimSettings.Enabled)
+        
+        mouse_box.Visible = SilentAimSettings.Enabled
+    end)
+    
+    Main:AddToggle("TeamCheck", {Text = "Team Check", Default = SilentAimSettings.TeamCheck}):OnChanged(function()
+        SilentAimSettings.TeamCheck = Toggles.TeamCheck.Value
+    end)
+    Main:AddToggle("VisibleCheck", {Text = "Visible Check", Default = SilentAimSettings.VisibleCheck}):OnChanged(function()
+        SilentAimSettings.VisibleCheck = Toggles.VisibleCheck.Value
+    end)
+    Main:AddDropdown("TargetPart", {AllowNull = true, Text = "Target Part", Default = SilentAimSettings.TargetPart, Values = {"Head", "HumanoidRootPart", "Random"}}):OnChanged(function()
+        SilentAimSettings.TargetPart = Options.TargetPart.Value
+    end)
+    Main:AddDropdown("Method", {AllowNull = true, Text = "Silent Aim Method", Default = SilentAimSettings.SilentAimMethod, Values = {
+        "Raycast","FindPartOnRay",
+        "FindPartOnRayWithWhitelist",
+        "FindPartOnRayWithIgnoreList",
+        "Mouse.Hit/Target"
+    }}):OnChanged(function() 
+        SilentAimSettings.SilentAimMethod = Options.Method.Value 
+    end)
+    Main:AddSlider('HitChance', {
+        Text = 'Hit chance',
+        Default = 100,
+        Min = 0,
+        Max = 100,
+        Rounding = 1,
+    
+        Compact = false,
     })
-
--- слушаем нажатие выбранного ключа и делаем TP
-UIS.InputEnded:Connect(function(input, gpe)
-    if gpe then return end
-    local opt = Options.TeleportKey
-    if not opt then return end
-
-    local key = opt.Value -- может быть Enum.KeyCode или строка
-    if typeof(key) == 'EnumItem' then
-        if input.KeyCode == key then
-            InstantTP()
-        end
-    elseif type(key) == 'string' and Enum.KeyCode[key] then
-        if input.KeyCode == Enum.KeyCode[key] then
-            InstantTP()
-        end
-    end
-end)
-
-local Floating = false
-local floatName = game:GetService("HttpService"):GenerateGUID(false)
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-
-
-local FloatPart
-local FloatValue = -3.1
-local FloatConn, qUp, eUp, qDown, eDown, floatDied
-
-
--- функция вкл/выкл
-local function SetFloat(state, speaker)
-Floating = state
-
-
-if state then
-local pchar = speaker.Character
-if pchar and not pchar:FindFirstChild(floatName) then
-FloatPart = Instance.new("Part")
-FloatPart.Name = floatName
-FloatPart.Parent = pchar
-FloatPart.Transparency = 1
-FloatPart.Size = Vector3.new(2,0.2,1.5)
-FloatPart.Anchored = true
-
-
-FloatValue = -3.1
-FloatPart.CFrame = pchar.HumanoidRootPart.CFrame * CFrame.new(0,FloatValue,0)
-
-
--- управление
-qUp = UserInputService.InputEnded:Connect(function(input)
-if input.KeyCode == Enum.KeyCode.Q then
-FloatValue += 0.5
-end
-end)
-eUp = UserInputService.InputEnded:Connect(function(input)
-if input.KeyCode == Enum.KeyCode.E then
-FloatValue -= 1.5
-end
-end)
-qDown = UserInputService.InputBegan:Connect(function(input)
-if input.KeyCode == Enum.KeyCode.Q then
-FloatValue -= 0.5
-end
-end)
-eDown = UserInputService.InputBegan:Connect(function(input)
-if input.KeyCode == Enum.KeyCode.E then
-FloatValue += 1.5
-end
-end)
-
-
-floatDied = pchar:FindFirstChildOfClass("Humanoid").Died:Connect(function()
-SetFloat(false, speaker)
-end)
-
-
-FloatConn = RunService.Heartbeat:Connect(function()
-if pchar and pchar:FindFirstChild("HumanoidRootPart") and pchar:FindFirstChild(floatName) then
-FloatPart.CFrame = pchar.HumanoidRootPart.CFrame * CFrame.new(0,FloatValue,0)
-else
-SetFloat(false, speaker)
-end
-end)
-end
-else
--- отключение
-if FloatConn then FloatConn:Disconnect() end
-if qUp then qUp:Disconnect() end
-if eUp then eUp:Disconnect() end
-if qDown then qDown:Disconnect() end
-if eDown then eDown:Disconnect() end
-if floatDied then floatDied:Disconnect() end
-if FloatPart then FloatPart:Destroy() end
-end
-end
-
--- Toggle Anti-aim
-MovementBox:AddToggle('AntiAimTogsgle', {
-    Text = 'Float',
-    Default = false,
-    Callback = function(Value)
-    local speaker = game.Players.LocalPlayer
-    SetFloat(Value, speaker)
-    end
-})
-
-local flyEnabled = false
-local flySpeed = 30 -- базовая скорость
-local flyBoost = 70 -- с Shift
-local bodyGyro, bodyVel
-
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
--- toggle fly
-local function toggleFly()
-    flyEnabled = not flyEnabled
-
-    local character = LocalPlayer.Character
-    if not character then return end
-    local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-    if flyEnabled then
-        humanoid.WalkSpeed = 0
-        humanoid.PlatformStand = true
-
-        bodyGyro = Instance.new("BodyGyro")
-        bodyGyro.P = 9e4
-        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-        bodyGyro.CFrame = humanoidRootPart.CFrame
-        bodyGyro.Parent = humanoidRootPart
-
-        bodyVel = Instance.new("BodyVelocity")
-        bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-        bodyVel.Velocity = Vector3.zero
-        bodyVel.Parent = humanoidRootPart
-
-        RunService.RenderStepped:Connect(function()
-            if not flyEnabled then return end
-            for _, part in ipairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            end
-
-            local moveDir = Vector3.zero
-            local cameraCF = Camera.CFrame
-            local speed = flySpeed
-
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-                moveDir += cameraCF.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-                moveDir -= cameraCF.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-                moveDir -= cameraCF.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-                moveDir += cameraCF.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.E) then
-                moveDir += cameraCF.UpVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
-                moveDir -= cameraCF.UpVector
-            end
-
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-                speed = flyBoost
-            end
-
-            if moveDir.Magnitude > 0 then
-                moveDir = moveDir.Unit * speed
-            end
-
-            bodyGyro.CFrame = cameraCF
-            bodyVel.Velocity = moveDir
-        end)
-    else
-        if bodyGyro then bodyGyro:Destroy() end
-        if bodyVel then bodyVel:Destroy() end
-
-        if humanoid then
-            humanoid.PlatformStand = false
-            humanoid.WalkSpeed = 16
-        end
-    end
-end
-
-local MovementBox = Tabs.Main:AddLeftGroupbox('Fly')
-
-
--- Fly Speed slider
-MovementBox:AddSlider('FlySpeed', {
-    Text = 'Fly Speed',
-    Default = 30,
-    Min = 0,
-    Max = 200,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-        flySpeed = Value
-    end
-})
-
--- Fly Boost slider (Shift)
-MovementBox:AddSlider('FlyBoost', {
-    Text = 'Fly Boost (Shift)',
-    Default = 70,
-    Min = 0,
-    Max = 249,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-        flyBoost = Value
-    end
-})
-
--- Fly Keybind (первым идёт)
-MovementBox:AddLabel('Fly Key'):AddKeyPicker('FlyKeybind', {
-    Default = 'F2',
-    SyncToggleState = true,
-    Mode = 'Toggle',
-    Text = 'Fly',
-    NoUI = false,
-    Callback = function(Value)
-        toggleFly(Value)
-    end
-})
-
-
-
-
--- Зацикленное применение силы прыжка
-RunService.RenderStepped:Connect(function()
-    local char = lp.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum and getgenv().JumpPowerValue then
-            hum.UseJumpPower = true
-            hum.JumpPower = getgenv().JumpPowerValue
-        end
-    end
-end)
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-
--- // AntiFling function \\ --
-local function EnableAntiFling()
-    local Services = setmetatable({}, {
-        __index = function(Self, Index)
-            local NewService = game.GetService(game, Index)
-            if NewService then
-                Self[Index] = NewService
-            end
-            return NewService
-        end
-    })
-
-    -- функция обработки игрока
-    local function PlayerAdded(Player)
-        local Detected = false
-        local Character;
-        local PrimaryPart;
-
-        local function CharacterAdded(NewCharacter)
-            Character = NewCharacter
-            repeat task.wait()
-                PrimaryPart = NewCharacter:FindFirstChild("HumanoidRootPart")
-            until PrimaryPart
-            Detected = false
-        end
-
-        CharacterAdded(Player.Character or Player.CharacterAdded:Wait())
-        Player.CharacterAdded:Connect(CharacterAdded)
-
-        Services.RunService.Heartbeat:Connect(function()
-            if (Character and Character:IsDescendantOf(workspace)) and (PrimaryPart and PrimaryPart:IsDescendantOf(Character)) then
-                if PrimaryPart.AssemblyAngularVelocity.Magnitude > 50 or PrimaryPart.AssemblyLinearVelocity.Magnitude > 100 then
-                    Detected = true
-                    for _, v in ipairs(Character:GetDescendants()) do
-                        if v:IsA("BasePart") then
-                            v.CanCollide = false
-                            v.AssemblyAngularVelocity = Vector3.zero
-                            v.AssemblyLinearVelocity = Vector3.zero
-                            v.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0)
-                        end
-                    end
-                    PrimaryPart.CanCollide = false
-                    PrimaryPart.AssemblyAngularVelocity = Vector3.zero
-                    PrimaryPart.AssemblyLinearVelocity = Vector3.zero
-                    PrimaryPart.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0)
-                end
-            end
-        end)
-    end
-
-    -- обработка игроков
-    for _, v in ipairs(Services.Players:GetPlayers()) do
-        if v ~= LocalPlayer then
-            PlayerAdded(v)
-        end
-    end
-    Services.Players.PlayerAdded:Connect(PlayerAdded)
-
-    -- защита самого игрока
-    local LastPosition = nil
-    Services.RunService.Heartbeat:Connect(function()
-        pcall(function()
-            local PrimaryPart = LocalPlayer.Character and LocalPlayer.Character.PrimaryPart
-            if not PrimaryPart then return end
-
-            if PrimaryPart.AssemblyLinearVelocity.Magnitude > 250 or PrimaryPart.AssemblyAngularVelocity.Magnitude > 250 then
-                PrimaryPart.AssemblyAngularVelocity = Vector3.zero
-                PrimaryPart.AssemblyLinearVelocity = Vector3.zero
-                if LastPosition then
-                    PrimaryPart.CFrame = LastPosition
-                end
-            elseif PrimaryPart.AssemblyLinearVelocity.Magnitude < 50 or PrimaryPart.AssemblyAngularVelocity.Magnitude > 50 then
-                LastPosition = PrimaryPart.CFrame
-            end
-        end)
+    Options.HitChance:OnChanged(function()
+        SilentAimSettings.HitChance = Options.HitChance.Value
     end)
 end
 
--- // Linoria UI Button \\ --
-local MiscBox = Tabs.Main:AddRightGroupbox('Misc')
-
-MiscBox:AddButton('Enable AntiFling', function()
-    EnableAntiFling()
-end)
-
-MiscBox:AddButton('Instant proximity prompt', function()
-    game:GetService("ProximityPromptService").PromptButtonHoldBegan:Connect(function(prompt) prompt.HoldDuration = 0 end)
-end)
-
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
--- вспомогательная функция
-local function getRoot(char)
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
-end
-
--- состояние
-local walkflinging = false
-
--- отключаем коллизию у всех частей
-local function disableAllCollisions(char)
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
-    end
-end
-
--- оставляем коллизию только на HRP
-local function hrpOnlyCollide(char)
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = (part.Name == "HumanoidRootPart")
-        end
-    end
-end
-
-local function startWalkFling()
-    if walkflinging then return end
-    walkflinging = true
-
-    local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid")
-    if humanoid then
-        humanoid.Died:Connect(function()
-            walkflinging = false
-            hrpOnlyCollide(LocalPlayer.Character)
-        end)
-    end
-
-    -- при включении антифлинга: отключаем ВСЁ
-    disableAllCollisions(LocalPlayer.Character)
-
-    task.spawn(function()
-        local movel = 0.1
-        while walkflinging do
-            RunService.Heartbeat:Wait()
-            local character = LocalPlayer.Character
-            local root = getRoot(character)
-
-            if character then
-                disableAllCollisions(character) -- поддерживаем полное отключение
-            end
-
-            if not (character and character.Parent and root and root.Parent) then
-                continue
-            end
-
-            local vel = root.Velocity
-            root.Velocity = vel * 10000 + Vector3.new(0, 10000, 0)
-
-            RunService.RenderStepped:Wait()
-            if character and root then
-                root.Velocity = vel
-            end
-
-            RunService.Stepped:Wait()
-            if character and root then
-                root.Velocity = vel + Vector3.new(0, movel, 0)
-                movel = -movel
-            end
-        end
+local MiscellaneousBOX = GeneralTab:AddLeftTabbox("Miscellaneous")
+local FieldOfViewBOX = GeneralTab:AddLeftTabbox("Field Of View") do
+    local Main = FieldOfViewBOX:AddTab("Visuals")
+    
+    Main:AddToggle("Visible", {Text = "Show FOV Circle"}):AddColorPicker("Color", {Default = Color3.fromRGB(54, 57, 241)}):OnChanged(function()
+        fov_circle.Visible = Toggles.Visible.Value
+        SilentAimSettings.FOVVisible = Toggles.Visible.Value
+    end)
+    Main:AddSlider("Radius", {Text = "FOV Circle Radius", Min = 0, Max = 360, Default = 130, Rounding = 0}):OnChanged(function()
+        fov_circle.Radius = Options.Radius.Value
+        SilentAimSettings.FOVRadius = Options.Radius.Value
+    end)
+    Main:AddToggle("MousePosition", {Text = "Show Silent Aim Target"}):AddColorPicker("MouseVisualizeColor", {Default = Color3.fromRGB(54, 57, 241)}):OnChanged(function()
+        mouse_box.Visible = Toggles.MousePosition.Value 
+        SilentAimSettings.ShowSilentAimTarget = Toggles.MousePosition.Value 
+    end)
+    local PredictionTab = MiscellaneousBOX:AddTab("Prediction")
+    PredictionTab:AddToggle("Prediction", {Text = "Mouse.Hit/Target Prediction"}):OnChanged(function()
+        SilentAimSettings.MouseHitPrediction = Toggles.Prediction.Value
+    end)
+    PredictionTab:AddSlider("Amount", {Text = "Prediction Amount", Min = 0.165, Max = 1, Default = 0.165, Rounding = 3}):OnChanged(function()
+        PredictionAmount = Options.Amount.Value
+        SilentAimSettings.MouseHitPredictionAmount = Options.Amount.Value
     end)
 end
 
-local function stopWalkFling()
-    walkflinging = false
-    hrpOnlyCollide(LocalPlayer.Character) -- при выключении: коллизия только на HRP
+resume(create(function()
+    RenderStepped:Connect(function()
+        if Toggles.MousePosition.Value and Toggles.aim_Enabled.Value then
+            if getClosestPlayer() then 
+                local Root = getClosestPlayer().Parent.PrimaryPart or getClosestPlayer()
+                local RootToViewportPoint, IsOnScreen = WorldToViewportPoint(Camera, Root.Position);
+                -- using PrimaryPart instead because if your Target Part is "Random" it will flicker the square between the Target's Head and HumanoidRootPart (its annoying)
+                
+                mouse_box.Visible = IsOnScreen
+                mouse_box.Position = Vector2.new(RootToViewportPoint.X, RootToViewportPoint.Y)
+            else 
+                mouse_box.Visible = false 
+                mouse_box.Position = Vector2.new()
+            end
+        end
+        
+        if Toggles.Visible.Value then 
+            fov_circle.Visible = Toggles.Visible.Value
+            fov_circle.Color = Options.Color.Value
+            fov_circle.Position = getMousePosition()
+        end
+    end)
+end))
+
+-- hooks
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
+    local Method = getnamecallmethod()
+    local Arguments = {...}
+    local self = Arguments[1]
+    local chance = CalculateChance(SilentAimSettings.HitChance)
+    if Toggles.aim_Enabled.Value and self == workspace and not checkcaller() and chance == true then
+        if Method == "FindPartOnRayWithIgnoreList" and Options.Method.Value == Method then
+            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithIgnoreList) then
+                local A_Ray = Arguments[2]
+
+                local HitPart = getClosestPlayer()
+                if HitPart then
+                    local Origin = A_Ray.Origin
+                    local Direction = getDirection(Origin, HitPart.Position)
+                    Arguments[2] = Ray.new(Origin, Direction)
+
+                    return oldNamecall(unpack(Arguments))
+                end
+            end
+        elseif Method == "FindPartOnRayWithWhitelist" and Options.Method.Value == Method then
+            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithWhitelist) then
+                local A_Ray = Arguments[2]
+
+                local HitPart = getClosestPlayer()
+                if HitPart then
+                    local Origin = A_Ray.Origin
+                    local Direction = getDirection(Origin, HitPart.Position)
+                    Arguments[2] = Ray.new(Origin, Direction)
+
+                    return oldNamecall(unpack(Arguments))
+                end
+            end
+        elseif (Method == "FindPartOnRay" or Method == "findPartOnRay") and Options.Method.Value:lower() == Method:lower() then
+            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRay) then
+                local A_Ray = Arguments[2]
+
+                local HitPart = getClosestPlayer()
+                if HitPart then
+                    local Origin = A_Ray.Origin
+                    local Direction = getDirection(Origin, HitPart.Position)
+                    Arguments[2] = Ray.new(Origin, Direction)
+
+                    return oldNamecall(unpack(Arguments))
+                end
+            end
+        elseif Method == "Raycast" and Options.Method.Value == Method then
+            if ValidateArguments(Arguments, ExpectedArguments.Raycast) then
+                local A_Origin = Arguments[2]
+
+                local HitPart = getClosestPlayer()
+                if HitPart then
+                    Arguments[3] = getDirection(A_Origin, HitPart.Position)
+
+                    return oldNamecall(unpack(Arguments))
+                end
+            end
+        end
+    end
+    return oldNamecall(...)
+end))
+
+local oldIndex = nil 
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
+    if self == Mouse and not checkcaller() and Toggles.aim_Enabled.Value and Options.Method.Value == "Mouse.Hit/Target" and getClosestPlayer() then
+        local HitPart = getClosestPlayer()
+         
+        if Index == "Target" or Index == "target" then 
+            return HitPart
+        elseif Index == "Hit" or Index == "hit" then 
+            return ((Toggles.Prediction.Value and (HitPart.CFrame + (HitPart.Velocity * PredictionAmount))) or (not Toggles.Prediction.Value and HitPart.CFrame))
+        elseif Index == "X" or Index == "x" then 
+            return self.X 
+        elseif Index == "Y" or Index == "y" then 
+            return self.Y 
+        elseif Index == "UnitRay" then 
+            return Ray.new(self.Origin, (self.Hit - self.Origin).Unit)
+        end
+    end
+
+    return oldIndex(self, Index)
+end))
+
+local VisualsBox = Window:AddTab("Visuals")
+local PlayersBOX = VisualsBox:AddLeftTabbox("Players")
+do
+    local Players = PlayersBOX:AddTab("Players")
 end
 
-MiscBox:AddToggle("WalkFlingToggle", {
-    Text = "Enable WalkFling",
-    Default = false,
-    Tooltip = "Включить/выключить WalkFling",
-    Callback = function(Value)
-        if Value then
-            startWalkFling()
-        else
-            stopWalkFling()
-        end
-    end
-})
-local LocalPlayerBox = Tabs.Main:AddRightGroupbox('LocalPlayer')
+local OtherTab   = Window:AddTab("Other")
 
-LocalPlayerBox:AddButton('Unlock camera', function()
-    Players.LocalPlayer.CameraMode = Enum.CameraMode.Classic
-    game.Players.LocalPlayer.CameraMaxZoomDistance = 99999
-end)
+-- таббокс слева (обычно без названия при создании)
+local LeftTabbox = OtherTab:AddLeftTabbox()
 
-LocalPlayerBox:AddButton('Camfix', function()
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Camera = workspace.CurrentCamera
-local Player = Players.LocalPlayer
-
-RunService.RenderStepped:Connect(function()
-    if Camera.CameraSubject ~= Player.Character and Player.Character then
-        local humanoid = Player.Character:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            Camera.CameraSubject = humanoid
-        end
-    end
-    if Camera.CameraType ~= Enum.CameraType.Custom then
-        Camera.CameraType = Enum.CameraType.Custom
-    end
-end)
-end)
-
-LocalPlayerBox:AddSlider('Fov Changer', {
-    Text = 'Fov',
-    Default = 70,
-    Min = 10,
-    Max = 120,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-    workspace.Camera.FieldOfView = Value
-    end
-})
+-- сам таб внутри таббокса
+local SelfTab = LeftTabbox:AddTab("Self")
 
 --// Services
 local Players = game:GetService("Players")
@@ -926,7 +565,7 @@ RunService.RenderStepped:Connect(function(dt)
 end)
 
 -- UI Elements
-LocalPlayerBox:AddToggle('FakeLagEnabled', {
+SelfTab:AddToggle('FakeLagEnabled', {
     Text = 'Fake Lag',
     Default = false,
     Callback = function(Value)
@@ -934,7 +573,7 @@ LocalPlayerBox:AddToggle('FakeLagEnabled', {
     end
 })
 
-LocalPlayerBox:AddToggle('BunnyHopEnabled', {
+SelfTab:AddToggle('BunnyHopEnabled', {
     Text = 'Bunny Hop',
     Default = false,
     Callback = function(Value)
@@ -942,7 +581,7 @@ LocalPlayerBox:AddToggle('BunnyHopEnabled', {
     end
 })
 
-LocalPlayerBox:AddSlider('BhopSpeed', {
+SelfTab:AddSlider('BhopSpeed', {
     Text = 'Bhop Speed',
     Default = 50,
     Min = 10,
@@ -954,7 +593,7 @@ LocalPlayerBox:AddSlider('BhopSpeed', {
     end
 })
 
-LocalPlayerBox:AddDropdown('RotationMode', {
+SelfTab:AddDropdown('RotationMode', {
     Values = { 'Spin', '180', 'Forward' },
     Default = 3,
     Multi = false,
@@ -964,1020 +603,228 @@ LocalPlayerBox:AddDropdown('RotationMode', {
     end
 })
 
+local flyEnabled = false
+local flySpeed = 30 -- базовая скорость
+local flyBoost = 70 -- с Shift
+local bodyGyro, bodyVel
+
 local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
-local ESPenabled = false
+-- toggle fly
+local function toggleFly()
+    flyEnabled = not flyEnabled
 
--- Получаем HRP
-local function getRoot(char)
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
-end
+    local character = LocalPlayer.Character
+    if not character then return end
+    local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
 
--- Создание ESP над головой
-local function createNameESP(plr)
-    task.spawn(function()
-        if not plr.Character or plr == LocalPlayer then return end
-        repeat task.wait() until plr.Character:FindFirstChildOfClass("Humanoid") and getRoot(plr.Character)
+    if flyEnabled then
+        humanoid.WalkSpeed = 0
+        humanoid.PlatformStand = true
 
-        -- Удалим старый, если был
-        local old = CoreGui:FindFirstChild(plr.Name.."_NameESP")
-        if old then old:Destroy() end
+        bodyGyro = Instance.new("BodyGyro")
+        bodyGyro.P = 9e4
+        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bodyGyro.CFrame = humanoidRootPart.CFrame
+        bodyGyro.Parent = humanoidRootPart
 
-        -- BillboardGui
-        local holder = Instance.new("BillboardGui")
-        holder.Name = plr.Name.."_NameESP"
-        holder.Adornee = getRoot(plr.Character)
-        holder.Size = UDim2.new(0,200,0,50)
-        holder.StudsOffset = Vector3.new(0,3,0)
-        holder.AlwaysOnTop = true
-        holder.Parent = CoreGui
+        bodyVel = Instance.new("BodyVelocity")
+        bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        bodyVel.Velocity = Vector3.zero
+        bodyVel.Parent = humanoidRootPart
 
-        -- TextLabel
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.new(1,0,1,0)
-        label.BackgroundTransparency = 1
-        label.TextColor3 = Color3.new(1,1,1)
-        label.TextStrokeTransparency = 0
-        label.Font = Enum.Font.SourceSansBold
-        label.TextScaled = true
-        label.Parent = holder
-
-        -- обновление текста
-        task.spawn(function()
-            while holder.Parent and ESPenabled and plr.Character and plr.Character:FindFirstChildOfClass("Humanoid") do
-                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-                local root = getRoot(plr.Character)
-                if hum and root then
-                    local distance = (Camera.CFrame.Position - root.Position).Magnitude
-                    label.Text = string.format("%s | HP: %d | %.0f studs", plr.Name, hum.Health, distance)
-                    if plr.TeamColor then
-                        label.TextColor3 = plr.TeamColor.Color
-                    end
+        RunService.RenderStepped:Connect(function()
+            if not flyEnabled then return end
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
                 end
-                task.wait(0.2)
             end
+
+            local moveDir = Vector3.zero
+            local cameraCF = Camera.CFrame
+            local speed = flySpeed
+
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                moveDir += cameraCF.LookVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                moveDir -= cameraCF.LookVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                moveDir -= cameraCF.RightVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                moveDir += cameraCF.RightVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+                moveDir += cameraCF.UpVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+                moveDir -= cameraCF.UpVector
+            end
+
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                speed = flyBoost
+            end
+
+            if moveDir.Magnitude > 0 then
+                moveDir = moveDir.Unit * speed
+            end
+
+            bodyGyro.CFrame = cameraCF
+            bodyVel.Velocity = moveDir
         end)
-    end)
-end
-
--- Включение ESP
-local function enableESP()
-    ESPenabled = true
-    for _,plr in pairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            createNameESP(plr)
-        end
-    end
-    Players.PlayerAdded:Connect(function(plr)
-        if ESPenabled then createNameESP(plr) end
-    end)
-end
-
--- Выключение ESP
-local function disableESP()
-    ESPenabled = false
-    for _,v in pairs(CoreGui:GetChildren()) do
-        if v.Name:match("_NameESP") then
-            v:Destroy()
-        end
-    end
-end
-
--- Удаление при выходе
-Players.PlayerRemoving:Connect(function(plr)
-    local f = CoreGui:FindFirstChild(plr.Name.."_NameESP")
-    if f then f:Destroy() end
-end)
-
--- === Linoria Toggle ===
-local esps = Tabs.Vis:AddLeftGroupbox("Esp")
-
-esps:AddToggle("NameESPToggle", {
-    Text = "Enable ESP",
-    Default = false,
-    Tooltip = "Show name, health and distance above players",
-    Callback = function(Value)
-        if Value then
-            enableESP()
-        else
-            disableESP()
-        end
-    end
-})
-
-
-local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
-local LocalPlayer = Players.LocalPlayer
-
--- Настройки
-local espTransparency = 0.4
-local ESPenabled = false
-
--- Получение HRP
-local function getRoot(char)
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
-end
-
--- Главная функция ESP
-local function createESP(plr)
-    task.spawn(function()
-        for _, v in pairs(CoreGui:GetChildren()) do
-            if v.Name == plr.Name.."_ESP" then
-                v:Destroy()
-            end
-        end
-        task.wait()
-
-        if plr.Character and plr ~= LocalPlayer and not CoreGui:FindFirstChild(plr.Name.."_ESP") then
-            local ESPholder = Instance.new("Folder")
-            ESPholder.Name = plr.Name.."_ESP"
-            ESPholder.Parent = CoreGui
-
-            repeat task.wait(1) until plr.Character and getRoot(plr.Character) and plr.Character:FindFirstChildOfClass("Humanoid")
-
-            for _, n in pairs(plr.Character:GetChildren()) do
-                if n:IsA("BasePart") then
-                    local box = Instance.new("BoxHandleAdornment")
-                    box.Name = plr.Name
-                    box.Parent = ESPholder
-                    box.Adornee = n
-                    box.AlwaysOnTop = true
-                    box.ZIndex = 10
-                    box.Size = n.Size
-                    box.Transparency = espTransparency
-                    box.Color3 = plr.TeamColor.Color
-                end
-            end
-
-            local addedFunc, teamChange, removedConn
-
-            addedFunc = plr.CharacterAdded:Connect(function()
-                if ESPenabled then
-                    ESPholder:Destroy()
-                    teamChange:Disconnect()
-                    repeat task.wait(1) until getRoot(plr.Character) and plr.Character:FindFirstChildOfClass("Humanoid")
-                    createESP(plr)
-                    addedFunc:Disconnect()
-                else
-                    teamChange:Disconnect()
-                    addedFunc:Disconnect()
-                end
-            end)
-
-            teamChange = plr:GetPropertyChangedSignal("TeamColor"):Connect(function()
-                if ESPenabled then
-                    ESPholder:Destroy()
-                    addedFunc:Disconnect()
-                    repeat task.wait(1) until getRoot(plr.Character) and plr.Character:FindFirstChildOfClass("Humanoid")
-                    createESP(plr)
-                    teamChange:Disconnect()
-                else
-                    teamChange:Disconnect()
-                end
-            end)
-
-            removedConn = ESPholder.AncestryChanged:Connect(function()
-                teamChange:Disconnect()
-                addedFunc:Disconnect()
-                removedConn:Disconnect()
-            end)
-        end
-    end)
-end
-
--- Включение ESP
-local function enableESP()
-    ESPenabled = true
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            createESP(plr)
-        end
-    end
-    Players.PlayerAdded:Connect(function(plr)
-        if ESPenabled then
-            createESP(plr)
-        end
-    end)
-end
-
--- Выключение ESP
-local function disableESP()
-    ESPenabled = false
-    for _, v in pairs(CoreGui:GetChildren()) do
-        if v.Name:match("_ESP") then
-            v:Destroy()
-        end
-    end
-end
-
--- Обновление прозрачности
-local function updateESPTransparency()
-    for _, folder in pairs(CoreGui:GetChildren()) do
-        if folder.Name:match("_ESP") then
-            for _, box in pairs(folder:GetChildren()) do
-                if box:IsA("BoxHandleAdornment") then
-                    box.Transparency = espTransparency
-                end
-            end
-        end
-    end
-end
-
--- === Linoria Toggles/Sliders ===
-esps:AddToggle("ESPToggle", {
-    Text = "Enable Chams",
-    Default = false,
-    Tooltip = "Enable or disable Chams",
-    Callback = function(Value)
-        if Value then
-            enableESP()
-        else
-            disableESP()
-        end
-    end
-})
-
-esps:AddSlider("ESPTransparencySlider", {
-    Text = "Chams Transparency",
-    Default = espTransparency,
-    Min = 0,
-    Max = 1,
-    Step = 0.05,
-    Rounding = 2,
-    Callback = function(Value)
-        espTransparency = Value
-        updateESPTransparency()
-    end
-})
-
--- Очистка при выходе игрока
-Players.PlayerRemoving:Connect(function(player)
-    if Toggles.ESPToggle.Value then
-        for _, v in pairs(CoreGui:GetChildren()) do
-            if v.Name == player.Name.."_ESP" then
-                v:Destroy()
-            end
-        end
-    end
-end)
-
-
-local esps = Tabs.Vis:AddRightGroupbox('LocalPlayer')
-
-local Player = game:GetService("Players").LocalPlayer
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-
-local camera = workspace.CurrentCamera
-local debugEnabled = false
-local cameraSpeed = 50  -- Увеличенная базовая скорость
-local fastSpeedMultiplier = 3
-local slowSpeedMultiplier = 0.3
-local mouseSensitivity = 0.5  -- Чувствительность мыши
-
--- Сохраняем оригинальные настройки камеры
-local originalCameraType
-local originalCameraSubject
-local originalFieldOfView = 70
-
--- Настройки управления (можно изменить)
-local moveKeys = {
-    forward = Enum.KeyCode.W,
-    backward = Enum.KeyCode.S,
-    left = Enum.KeyCode.A,
-    right = Enum.KeyCode.D,
-    up = Enum.KeyCode.Space,
-    down = Enum.KeyCode.LeftControl
-}
-
--- Переменные для вращения камеры
-local yaw = 0
-local pitch = 0
-
--- Функция для включения debug камеры
-local function enableDebugCamera()
-    if debugEnabled then return end
-    debugEnabled = true
-    
-    -- Сохраняем текущие настройки камеры
-    originalCameraType = camera.CameraType
-    originalCameraSubject = camera.CameraSubject
-    originalFieldOfView = camera.FieldOfView
-    
-    -- Устанавливаем камеру в ручной режим
-    camera.CameraType = Enum.CameraType.Scriptable
-    camera.CameraSubject = nil
-    
-    -- Инициализируем углы вращения
-    local look = camera.CFrame.LookVector
-    yaw = math.atan2(look.X, look.Z)
-    pitch = math.asin(look.Y)
-    
-    -- Останавливаем персонажа, если он существует
-    if Player.Character and Player.Character:FindFirstChild("Humanoid") then
-          humanoid.PlatformStand = True
-    end
-    
-    -- Скрываем интерфейс для лучшего обзора
-    if Player:FindFirstChild("PlayerGui") then
-        Player.PlayerGui:SetTopbarTransparency(1)
-    end
-    
-    -- Захватываем мышь для плавного вращения
-    UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-end
-
--- Функция для выключения debug камеры
-local function disableDebugCamera()
-    if not debugEnabled then return end
-    debugEnabled = false
-    
-    -- Восстанавливаем оригинальные настройки камеры
-    camera.CameraType = originalCameraType or Enum.CameraType.Custom
-    camera.CameraSubject = originalCameraSubject or Player.Character and Player.Character:FindFirstChild("Humanoid")
-    camera.FieldOfView = originalFieldOfView or 70
-    
-    -- Восстанавливаем скорость персонажа, если он существует
-    if Player.Character and Player.Character:FindFirstChild("Humanoid") then
-        humanoid.PlatformStand = False
-    end
-    
-    -- Восстанавливаем интерфейс
-    if Player:FindFirstChild("PlayerGui") then
-        Player.PlayerGui:SetTopbarTransparency(0)
-    end
-    
-    -- Возвращаем нормальное поведение мыши
-    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-end
-
--- Функция для переключения debug камеры
-local function toggleDebugCamera()
-    if debugEnabled then
-        disableDebugCamera()
     else
-        enableDebugCamera()
+        if bodyGyro then bodyGyro:Destroy() end
+        if bodyVel then bodyVel:Destroy() end
+
+        if humanoid then
+            humanoid.PlatformStand = false
+            humanoid.WalkSpeed = 16
+        end
     end
 end
+
+-- Fly Speed slider
+SelfTab:AddSlider('FlySpeed', {
+    Text = 'Fly Speed',
+    Default = 30,
+    Min = 0,
+    Max = 200,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        flySpeed = Value
+    end
+})
+
+-- Fly Boost slider (Shift)
+SelfTab:AddSlider('FlyBoost', {
+    Text = 'Fly Boost (Shift)',
+    Default = 70,
+    Min = 0,
+    Max = 249,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        flyBoost = Value
+    end
+})
 
 -- Fly Keybind (первым идёт)
-esps:AddLabel('Debug Camera Toggle'):AddKeyPicker('DebugCamera', {
-    Default = 'F1',
+SelfTab:AddLabel('Fly Key'):AddKeyPicker('FlyKeybind', {
+    Default = 'F2',
     SyncToggleState = true,
     Mode = 'Toggle',
-    Text = 'Debug camera',
+    Text = 'Fly',
     NoUI = false,
-    Callback = function(knopka)
-        toggleDebugCamera()
+    Callback = function(Value)
+        toggleFly(Value)
     end
 })
 
--- Основной цикл движения камеры
-RunService.RenderStepped:Connect(function(deltaTime)
-    if not debugEnabled then return end
-    
-    -- Определяем текущую скорость
-    local currentSpeed = cameraSpeed
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) then
-        currentSpeed = currentSpeed * slowSpeedMultiplier
-    elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-        currentSpeed = currentSpeed * fastSpeedMultiplier
-    end
-    
-    -- Обработка вращения камеры мышью
-    local mouseDelta = UserInputService:GetMouseDelta()
-    yaw = yaw - mouseDelta.X * 0.01 * mouseSensitivity
-    pitch = math.clamp(pitch - mouseDelta.Y * 0.01 * mouseSensitivity, -math.pi/2 + 0.1, math.pi/2 - 0.1)
-    
-    -- Создаем новую ориентацию камеры
-    local newCFrame = CFrame.new(camera.CFrame.Position) * 
-                     CFrame.fromOrientation(pitch, yaw, 0)
-    
-    -- Движение камеры
-    local moveVector = Vector3.new(0, 0, 0)
-    
-    if UserInputService:IsKeyDown(moveKeys.forward) then
-        moveVector = moveVector + newCFrame.LookVector
-    end
-    if UserInputService:IsKeyDown(moveKeys.backward) then
-        moveVector = moveVector - newCFrame.LookVector
-    end
-    if UserInputService:IsKeyDown(moveKeys.left) then
-        moveVector = moveVector - newCFrame.RightVector
-    end
-    if UserInputService:IsKeyDown(moveKeys.right) then
-        moveVector = moveVector + newCFrame.RightVector
-    end
-    if UserInputService:IsKeyDown(moveKeys.up) then
-        moveVector = moveVector + Vector3.new(0, 1, 0)
-    end
-    if UserInputService:IsKeyDown(moveKeys.down) then
-        moveVector = moveVector - Vector3.new(0, 1, 0)
-    end
-    
-    -- Применяем движение
-    if moveVector.Magnitude > 0 then
-        moveVector = moveVector.Unit * currentSpeed * deltaTime
-        newCFrame = newCFrame + moveVector
-    end
-    
-    -- Обновляем позицию и поворот камеры
-    camera.CFrame = newCFrame
-    
-    -- Изменение FOV колесиком мыши
-    local mouseWheel = UserInputService:GetMouseWheel()
-    if mouseWheel ~= 0 then
-        camera.FieldOfView = math.clamp(camera.FieldOfView - mouseWheel * 2, 5, 120)
-    end
+-- // WalkSpeed Boost (TP-style movement)
+local uis = game:GetService("UserInputService")
+local runService = game:GetService("RunService")
+local player = game.Players.LocalPlayer
+local hrp
+
+player.CharacterAdded:Connect(function(char)
+    hrp = char:WaitForChild("HumanoidRootPart")
 end)
 
--- Автоматическое отключение debug-камеры при смерти
-Player.CharacterAdded:Connect(function(character)
-    character:WaitForChild("Humanoid").Died:Connect(function()
-        disableDebugCamera()
-    end)
-end)
+if player.Character then
+    hrp = player.Character:WaitForChild("HumanoidRootPart")
+end
 
-local Players = game:GetService("Players")
-local localPlayer = Players.LocalPlayer
-local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-
--- ===== Настройки/состояние =====
-local originalMaterials = {}
-local originalFace = nil
-local originalHRPTransparency
-local forceFieldEnabled = false
-
--- Имя атрибутов для сохранения между смертями
-local ATTR_COLOR = "SavedColor"
-local ATTR_FORCEFIELD = "SavedForceField"
-
--- Цвет по умолчанию
-local currentColor = Color3.fromRGB(255, 255, 255)
-
--- Набор имён частей, к которым МОЖНО применять материал (R6 + R15)
-local LIMB_NAMES = {
-	-- Общие
-	Head = true,
-
-	-- R6
-	["Torso"] = true,
-	["Left Arm"] = true,
-	["Right Arm"] = true,
-	["Left Leg"] = true,
-	["Right Leg"] = true,
-
-	-- R15 — торс
-	["UpperTorso"] = true,
-	["LowerTorso"] = true,
-
-	-- R15 — руки
-	["LeftUpperArm"] = true,
-	["LeftLowerArm"] = true,
-	["LeftHand"] = true,
-	["RightUpperArm"] = true,
-	["RightLowerArm"] = true,
-	["RightHand"] = true,
-
-	-- R15 — ноги
-	["LeftUpperLeg"] = true,
-	["LeftLowerLeg"] = true,
-	["LeftFoot"] = true,
-	["RightUpperLeg"] = true,
-	["RightLowerLeg"] = true,
-	["RightFoot"] = true,
+-- Состояние кнопок
+local moving = {
+    W = false,
+    S = false,
+    A = false,
+    D = false,
 }
 
-local function isCharacterLimb(part: Instance)
-	return part:IsA("BasePart") and LIMB_NAMES[part.Name] == true
-end
+-- Обработка нажатия
+uis.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.W then moving.W = true end
+    if input.KeyCode == Enum.KeyCode.S then moving.S = true end
+    if input.KeyCode == Enum.KeyCode.A then moving.A = true end
+    if input.KeyCode == Enum.KeyCode.D then moving.D = true end
+end)
 
--- ===== Сохранение оригинальных данных =====
-local function saveOriginalAssets()
-	originalMaterials = {}
+-- Обработка отпускания
+uis.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.W then moving.W = false end
+    if input.KeyCode == Enum.KeyCode.S then moving.S = false end
+    if input.KeyCode == Enum.KeyCode.A then moving.A = false end
+    if input.KeyCode == Enum.KeyCode.D then moving.D = false end
+end)
 
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") then
-			originalMaterials[part] = {
-				Material = part.Material,
-				Transparency = part.Transparency,
-				Color = part.Color
-			}
-			if part.Name == "HumanoidRootPart" then
-				originalHRPTransparency = part.Transparency
-			end
-		end
-	end
-
-	-- Сохраняем лицо
-	local head = character:FindFirstChild("Head")
-	if head then
-		for _, decal in ipairs(head:GetChildren()) do
-			if decal:IsA("Decal") and decal.Name == "face" then
-				originalFace = decal:Clone()
-				break
-			end
-		end
-	end
-end
-
--- ===== Применение ForceField только к конечностям/торсу/голове =====
-local function applyForceField()
-	for part, _ in pairs(originalMaterials) do
-		if isCharacterLimb(part) then
-			part.Material = Enum.Material.ForceField
-			part.Color = currentColor
-			part.Transparency = 0
-		elseif part:IsA("BasePart") and part.Name == "HumanoidRootPart" then
-			part.Transparency = 1 -- скрываем HRP
-		end
-	end
-
-	-- НЕ трогаем аксессуары материалом (по твоей просьбе),
-	-- но если хочешь, можно раскомментировать изменение цвета аксессуаров:
-	-- for _, accessory in ipairs(character:GetChildren()) do
-	-- 	if accessory:IsA("Accessory") then
-	-- 		local handle = accessory:FindFirstChild("Handle")
-	-- 		if handle then
-	-- 			handle.Color = currentColor
-	-- 		end
-	-- 	end
-	-- end
-
-	-- Удаляем лицо
-	local head = character:FindFirstChild("Head")
-	if head then
-		for _, decal in ipairs(head:GetChildren()) do
-			if decal:IsA("Decal") and decal.Name == "face" then
-				decal:Destroy()
-			end
-		end
-	end
-end
-
--- ===== Восстановление оригинальных материалов =====
-local function restoreOriginalAssets()
-	for part, data in pairs(originalMaterials) do
-		if part:IsA("BasePart") then
-			part.Material = data.Material
-			part.Color = data.Color
-			part.Transparency = data.Transparency
-		end
-	end
-
-	-- Восстановить HRP
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if hrp and originalHRPTransparency ~= nil then
-		hrp.Transparency = originalHRPTransparency
-	end
-
-	-- Восстановить лицо
-	local head = character:FindFirstChild("Head")
-	if head and originalFace then
-		for _, decal in ipairs(head:GetChildren()) do
-			if decal:IsA("Decal") and decal.Name == "face" then
-				decal:Destroy()
-			end
-		end
-		originalFace:Clone().Parent = head
-	end
-end
-
--- ===== Обновление цвета (работает и с ForceField, и без) =====
-local function updateColor(newColor: Color3)
-	currentColor = newColor
-
-	-- красим все части персонажа (включая конечности); аксессуары — по желанию
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") then
-			part.Color = currentColor
-		end
-	end
-
-	-- (опционально) красить аксессуары:
-	-- for _, accessory in ipairs(character:GetChildren()) do
-	-- 	if accessory:IsA("Accessory") then
-	-- 		local handle = accessory:FindFirstChild("Handle")
-	-- 		if handle then
-	-- 			handle.Color = currentColor
-	-- 		end
-	-- 	end
-	-- end
-
-	-- сохраняем цвет в атрибут игрока (чтобы переживал смерть)
-	if localPlayer then
-		localPlayer:SetAttribute(ATTR_COLOR, currentColor)
-	end
-end
-
--- ===== Инициализация сохранённых настроек игрока =====
-local function loadSavedSettings()
-	-- Цвет
-	local savedColor = localPlayer:GetAttribute(ATTR_COLOR)
-	if typeof(savedColor) == "Color3" then
-		currentColor = savedColor
-	else
-		localPlayer:SetAttribute(ATTR_COLOR, currentColor)
-	end
-
-	-- Состояние ForceField
-	local savedFF = localPlayer:GetAttribute(ATTR_FORCEFIELD)
-	if typeof(savedFF) == "boolean" then
-		forceFieldEnabled = savedFF
-	else
-		localPlayer:SetAttribute(ATTR_FORCEFIELD, forceFieldEnabled)
-	end
-end
-
--- ===== Обработчик спауна/респауна персонажа =====
-local function onCharacterAdded(newCharacter)
-	character = newCharacter
-	humanoid = character:WaitForChild("Humanoid")
-	character:WaitForChild("HumanoidRootPart")
-
-	-- загрузить сохранённые настройки (цвет/FF) и применить
-	loadSavedSettings()
-
-	-- Сохранить оригиналы
-	saveOriginalAssets()
-
-	-- Применить материал/цвет согласно текущим настройкам
-	if forceFieldEnabled then
-		applyForceField()
-	else
-		restoreOriginalAssets()
-	end
-
-
-	-- На смерть ничего особого делать не нужно — CharacterAdded сработает при респавне
-end
-
--- ===== Первичный запуск =====
-loadSavedSettings()
-saveOriginalAssets()
-
--- Подписки
-localPlayer.CharacterAdded:Connect(onCharacterAdded)
-
--- ===== UI =====
--- ВАЖНО: предполагается, что Tab уже создан твоей UI-библиотекой выше по коду.
-
-esps:AddToggle('ForceFieldMaterial', {
-    Text = 'ForceField Material',
-    Default = false,
+SelfTab:AddSlider('WalkTPSpeed', {
+    Text = 'WalkSpeed Boost',
+    Default = 0,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Suffix = "%",
     Callback = function(Value)
-        forceFieldEnabled = Value
-		localPlayer:SetAttribute(ATTR_FORCEFIELD, forceFieldEnabled)
-		if Value then
-			applyForceField()
-		else
-			restoreOriginalAssets()
-		end
-		-- Цвет должен остаться/обновиться в любом случае
-		updateColor(currentColor)
+        getgenv().WalkTPSpeed = Value
     end
 })
 
-esps:AddLabel('Player Color'):AddColorPicker('ColorPicker', {
-    Default = Color3.new(0, 1, 0), 
-    Title = 'Color', 
-    Transparency = 0, 
-    Callback = function(Value)
-    		-- Сохраняем и применяем цвет; он переживёт смерть
-		updateColor(Value)
+-- Плавное движение
+runService.RenderStepped:Connect(function(dt)
+    if hrp and getgenv().WalkTPSpeed and getgenv().WalkTPSpeed > 0 then
+        local cam = workspace.CurrentCamera
+        local moveVec = Vector3.zero
 
-		-- Если ForceField включён, убеждаемся, что материалные части окрашены в новый цвет
-		if forceFieldEnabled then
-			applyForceField() -- пройдёмся по конечностям, чтобы точно обновить цвет ForceField
-		end
-    end
-})
+        -- Берём векторы камеры, обнуляем Y (движение только по земле)
+        local forward = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
+        local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+        if moving.W then moveVec = moveVec + forward end
+        if moving.S then moveVec = moveVec - forward end
+        if moving.A then moveVec = moveVec - right end
+        if moving.D then moveVec = moveVec + right end
 
-local lp = Players.LocalPlayer
-local phantom = nil
-local phantomConn = nil
-local animConn = nil
-local history = {}
-local phantomEnabled = false -- чтобы понимать, включен ли тоггл
-
--- Удаление фантома
-local function removePhantom()
-    if phantom then
-        phantom:Destroy()
-        phantom = nil
-    end
-    if phantomConn then phantomConn:Disconnect() phantomConn = nil end
-    if animConn then animConn:Disconnect() animConn = nil end
-    history = {}
-end
-
--- Создание фантома
-local function spawnPhantom()
-    removePhantom()
-
-    local char = lp.Character or lp.CharacterAdded:Wait()
-    local root = char:WaitForChild("HumanoidRootPart")
-    local hum = char:WaitForChild("Humanoid")
-
-    -- Клонируем
-    local oldArchivable = char.Archivable
-    char.Archivable = true
-    local clone = char:Clone()
-    char.Archivable = oldArchivable
-
-    if not clone then return end
-
-    -- Чистим аксессуары, одежду, face
-    for _, inst in ipairs(clone:GetDescendants()) do
-        if inst:IsA("Accessory") 
-        or inst:IsA("Hat") 
-        or inst:IsA("Shirt") 
-        or inst:IsA("Pants") 
-        or inst:IsA("ShirtGraphic") 
-        or inst:IsA("BodyColors") then
-            inst:Destroy()
-        elseif inst:IsA("Decal") and inst.Name == "face" then
-            inst:Destroy()
-        elseif inst:IsA("MeshPart") or inst:IsA("Part") then
-            inst.Transparency = 0.7
-            inst.Color = Color3.new(1, 1, 1)
-            inst.CanCollide = false
-            inst.Massless = true
-            if inst:IsA("MeshPart") then
-                inst.TextureID = ""
-                inst.Material = Enum.Material.SmoothPlastic
-            end
-            if inst.Name == "HumanoidRootPart" then
-                inst.Transparency = 1 -- скрываем HRP
-            end
+        if moveVec.Magnitude > 0 then
+            local step = moveVec.Unit * getgenv().WalkTPSpeed * dt
+            hrp.CFrame = hrp.CFrame + step
         end
-    end
-
-    phantom = clone
-    phantom.Name = "Phantom"
-    phantom.Parent = workspace
-
-    local phHum = phantom:FindFirstChildOfClass("Humanoid")
-    local phAnimator = phHum and phHum:FindFirstChild("Animator")
-    local animator = hum:FindFirstChild("Animator")
-
-    if phHum then
-        phHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-    end
-
-    -- задержка (эффект пинга)
-    history = {}
-    local delayFrames = 15
-    phantomConn = RunService.Heartbeat:Connect(function()
-        if not phantom or not root.Parent then return end
-        table.insert(history, root.CFrame)
-        if #history > delayFrames then
-            local oldCFrame = table.remove(history, 1)
-            phantom:PivotTo(oldCFrame)
-        end
-    end)
-
-    -- повтор анимаций
-    if animator and phAnimator then
-        animConn = animator.AnimationPlayed:Connect(function(track)
-            for _, t in ipairs(phAnimator:GetPlayingAnimationTracks()) do
-                t:Stop()
-            end
-            local newTrack = phAnimator:LoadAnimation(track.Animation)
-            newTrack:Play()
-            newTrack.TimePosition = track.TimePosition
-            newTrack.Speed = track.Speed
-        end)
-    end
-end
-
-esps:AddToggle('Phantom', {
-    Text = 'Phantom Toggle',
-    Default = false,
-    Callback = function(Value)
-      phantomEnabled = Value
-      if Value then
-          spawnPhantom()
-      else
-          removePhantom()
-      end
-    end
-})
-
--- Автопереспавн фантома после смерти / респавна игрока
-lp.CharacterAdded:Connect(function(char)
-    char:WaitForChild("Humanoid").Died:Connect(function()
-        removePhantom()
-    end)
-    if phantomEnabled then
-        task.wait(1) -- подождать пока у игрока всё прогрузится
-        spawnPhantom()
     end
 end)
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local player = Players.LocalPlayer
+-- таббокс слева (обычно без названия при создании)
+local RightTabbox = OtherTab:AddRightTabbox()
 
-local coneColor = Color3.fromRGB(255, 0, 137) -- Стартовый цвет
-local conePart = nil
-local rainbowEnabled = false -- флаг для радужного режима
-local rainbowConnection = nil -- хранит подключение цикла радужного цвета
+-- сам таб внутри таббокса
+local OtherBox = RightTabbox:AddTab("Other")
 
--- Функция для создания конуса
-local function createCone(character)
-    if not character or not character:FindFirstChild("Head") then return end
-
-    -- Удаляем старый конус
-    if conePart and conePart.Parent then
-        conePart:Destroy()
-    end
-
-    local head = character.Head
-
-    -- Конус
-    conePart = Instance.new("Part")
-    conePart.Name = "ChinaHat"
-    conePart.Size = Vector3.new(1, 1, 1)
-    conePart.Anchored = false
-    conePart.CanCollide = false
-    conePart.Transparency = 0.3
-    conePart.Color = coneColor
-
-    local mesh = Instance.new("SpecialMesh", conePart)
-    mesh.MeshType = Enum.MeshType.FileMesh
-    mesh.MeshId = "rbxassetid://1033714"
-    mesh.Scale = Vector3.new(1.7, 1.1, 1.7)
-
-    local weld = Instance.new("Weld")
-    weld.Part0 = head
-    weld.Part1 = conePart
-    weld.C0 = CFrame.new(0, 0.9, 0)
-
-    conePart.Parent = character
-    weld.Parent = conePart
-
-    return conePart
-end
-
--- Обновление цвета
-local function updateConeColor(color)
-    if conePart then
-        conePart.Color = color
-    end
-end
-
--- Радужный цикл
-local function startRainbow()
-    if rainbowConnection then rainbowConnection:Disconnect() end
-    rainbowConnection = RunService.RenderStepped:Connect(function()
-        local t = tick() % 5 / 5 -- плавный цикл 0-1
-        local color = Color3.fromHSV(t, 1, 1)
-        updateConeColor(color)
-    end)
-end
-
-local function stopRainbow()
-    if rainbowConnection then
-        rainbowConnection:Disconnect()
-        rainbowConnection = nil
-    end
-    updateConeColor(coneColor)
-end
-
--- Проверяем конус
-local function checkCone()
-    if not player.Character then return end
-    local hatExists = player.Character:FindFirstChild("ChinaHat") or false
-    if not hatExists then
-        createCone(player.Character)
-    end
-    -- Восстанавливаем радужный режим если был включен
-    if rainbowEnabled then
-        startRainbow()
-    else
-        updateConeColor(coneColor)
-    end
-end
-
--- Респавн
-player.CharacterAdded:Connect(function(character)
-    createCone(character)
-    if rainbowEnabled then
-        startRainbow()
-    else
-        updateConeColor(coneColor)
-    end
-
-    while character and character:IsDescendantOf(game) do
-        checkCone()
-        task.wait(1)
-    end
-end)
-
--- Если уже есть персонаж
-if player.Character then
-    createCone(player.Character)
-end
-
-esps:AddLabel('China hat'):AddColorPicker('ColorPicker', {
-    Default = Color3.new(0, 1, 0), 
-    Title = 'China hat color', 
-    Transparency = 0, 
-    Callback = function(color)
-        coneColor = color
-        if not rainbowEnabled then
-            updateConeColor(coneColor)
-        end
-    end
-})
-
-esps:AddToggle('Rainbow chinahat', {
-    Text = 'Rainbow chinahat',
-    Default = false,
-    Callback = function(Value)
-        rainbowEnabled = Value
-        if Value then
-            startRainbow()
-        else
-            stopRainbow()
-        end
-    end
-})
-
-local esps = Tabs.Vis:AddLeftGroupbox('Visual')
-
-esps:AddToggle('Fullbrightt', {
-    Text = 'Fullbright',
-    Default = false,
-    Callback = function(state)
-        if state then
-        _G.LightingEnabled = true
-
-local Lighting = game:GetService("Lighting")
-
-if _G.LightingEnabled then
-  
-    Lighting.Ambient = Color3.new(1, 1, 1)
-    Lighting.Brightness = 2
-    Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
-    Lighting.FogEnd = 1e10
-
-   
-    Lighting:GetPropertyChangedSignal("Ambient"):Connect(function()
-        if _G.LightingEnabled then
-            Lighting.Ambient = Color3.new(1, 1, 1)
-        end
-    end)
-
-    Lighting:GetPropertyChangedSignal("Brightness"):Connect(function()
-        if _G.LightingEnabled then
-            Lighting.Brightness = 2
-        end
-    end)
-
-    Lighting:GetPropertyChangedSignal("OutdoorAmbient"):Connect(function()
-        if _G.LightingEnabled then
-            Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
-        end
-    end)
-
-    Lighting:GetPropertyChangedSignal("FogEnd"):Connect(function()
-        if _G.LightingEnabled then
-            Lighting.FogEnd = 1e10
-        end
-    end)
-end
-
-    else
-        _G.LightingEnabled = false
-
-local Lighting = game:GetService("Lighting")
-
--- Устанавливаем чуть более светлый нейтральный свет
-Lighting.Ambient = Color3.new(0.7, 0.7, 0.7) -- Легкий серый оттенок
-Lighting.Brightness = 1 -- Стандартная яркость
-Lighting.OutdoorAmbient = Color3.new(0.7, 0.7, 0.7) -- Тот же светлый серый
-Lighting.FogEnd = 100000 -- Ограничение на дальность тумана
-
-    end
-    end
-})
-
-esps:AddButton('Remove Fog', function()
+OtherBox:AddButton('Remove fog', function()
     game.Lighting.FogEnd = 10000
     game.Lighting.FogStart = 0
 end)
 
-local skk = Tabs.sk:AddLeftGroupbox('Sky')
+OtherBox:AddSlider('ssss', {
+    Text = 'Brightness',
+    Default = 3,
+    Min = 0,
+    Max = 10,
+    Rounding = 1, -- в Linoria округление задаётся целым числом знаков после запятой
+    Suffix = '', -- у Brightness нет процентов, лучше оставить пустым
+    Callback = function(Value)
+        game:GetService("Lighting").Brightness = Value
+    end
+})
+
 
 local SkyBoxes = {
     ["Night"] = {
@@ -2037,7 +884,7 @@ local function ApplySky(data)
     sky.Parent = game.Lighting
 end
 
-skk:AddDropdown("SkySelector", {
+OtherBox:AddDropdown("SkySelector", {
     Values = {"Night", "Pink", "Moon", "Black"},
     Default = 1,
     Multi = false,
@@ -2051,61 +898,221 @@ skk:AddDropdown("SkySelector", {
 -- сразу Night ставим
 ApplySky(SkyBoxes["Night"])
 
-local skk = Tabs.sk:AddRightGroupbox('Sky Settings')
-
-local Lighting = game:GetService("Lighting")
-local UserInputService = game:GetService("UserInputService")
-
-local Lighting = game:GetService("Lighting")
-local UserInputService = game:GetService("UserInputService")
-
--- Настройки дня и ночи
-local daySettings = {
-    ClockTime = 14,
-    Ambient = Color3.fromRGB(178, 178, 178),
-}
-
-local nightSettings = {
-    ClockTime = 0,
-    Ambient = Color3.fromRGB(50, 50, 50),
-}
-
-local isDay = true
-
--- Функция переключения дня и ночи
-local function toggleDayNight()
-    isDay = not isDay
-    
-    if isDay then
-        for property, value in pairs(daySettings) do
-            Lighting[property] = value
-        end
-    else
-        for property, value in pairs(nightSettings) do
-            Lighting[property] = value
-        end
-    end
-end
-
-skk:AddToggle('Day/Night', {
-    Text = 'Day/Night',
+OtherBox:AddToggle('HideTerrainDecor', {
+    Text = 'Hide grass',
     Default = false,
-    Callback = function(Value)
-    toggleDayNight()
+    Tooltip = 'nothink',
+    Callback = function(on)
+        local ok, err = pcall(function()
+            workspace.Terrain.Decoration = not (not on)
+        end)
+        if not ok then
+            warn("[Linoria] Не удалось изменить Terrain.Decoration: ", err)
+        end
     end
 })
 
-Library:SetWatermarkVisibility(true)
+-- Сохраним дефолтные значения, чтобы было куда возвращать
+local L = game:GetService("Lighting")
+local Defaults = {
+    Ambient = L.Ambient,
+    OutdoorAmbient = L.OutdoorAmbient
+}
 
-local servee = Tabs.serve:AddLeftGroupbox('Server')
+-- Тумблер + цвет
+OtherBox:AddToggle('AmbientToggle', { Text = 'Ambient override', Default = false })
+    :AddColorPicker('AmbientColor', { Default = Color3.fromRGB(54, 57, 241) })
 
--- Сервисы
+-- Реакция на ВКЛ/ВЫКЛ тумблера
+Toggles.AmbientToggle:OnChanged(function()
+    if Toggles.AmbientToggle.Value then
+        local c = Options.AmbientColor.Value
+        L.Ambient = c
+        L.OutdoorAmbient = c
+    else
+        L.Ambient = Defaults.Ambient
+        L.OutdoorAmbient = Defaults.OutdoorAmbient
+    end
+end)
+
+-- Если меняем цвет — применяем его, но только когда тумблер включён
+Options.AmbientColor:OnChanged(function()
+    if Toggles.AmbientToggle.Value then
+        local c = Options.AmbientColor.Value
+        L.Ambient = c
+        L.OutdoorAmbient = c
+    end
+end)
+
+OtherBox:AddButton('Unlock camera', function()
+    local Players = game:GetService("Players")
+    local player = Players.LocalPlayer
+
+    -- Set maximum zoom distance to a large number
+    player.CameraMaxZoomDistance = 9999
+
+    -- Set camera mode to Classic
+    player.CameraMode = Enum.CameraMode.Classic
+end)
+
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+
+local fovValue = 70 -- начальное значение FOV
+
+-- Слайдер для изменения FOV
+OtherBox:AddSlider('FovSlider', {
+    Text = 'Fov',
+    Default = fovValue,
+    Min = 10,
+    Max = 120,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        fovValue = Value
+    end
+})
+
+-- Loop для обновления FOV каждый кадр
+RunService.RenderStepped:Connect(function()
+    if Camera then
+        Camera.FieldOfView = fovValue
+    end
+end)
+
+
+-- LocalScript в StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ====== Состояние
+local currentTool: Tool? = nil
+local renderConn: RBXScriptConnection? = nil
+local equipConns = {}
+local baseGrip = CFrame.new()
+
+local offsetPos = Vector3.new(0, 0, 0)
+local offsetRot = Vector3.new(0, 0, 0)
+local onlyFirstPerson = true -- toggle state
+
+-- Получаем смещение в виде CFrame
+local function getOffsetCFrame()
+	return CFrame.new(offsetPos) * CFrame.Angles(
+		math.rad(offsetRot.X), 
+		math.rad(offsetRot.Y), 
+		math.rad(offsetRot.Z)
+	)
+end
+
+-- Останавливаем рендер
+local function stopRender()
+	if renderConn then
+		renderConn:Disconnect()
+		renderConn = nil
+	end
+end
+
+-- Рендерим инструмент каждый кадр
+local function startRender()
+	stopRender()
+	renderConn = RunService.RenderStepped:Connect(function()
+		if currentTool and currentTool.Parent == LocalPlayer.Character then
+			if onlyFirstPerson then
+				local head = LocalPlayer.Character:FindFirstChild("Head")
+				if head then
+					local dist = (Camera.CFrame.Position - head.Position).Magnitude
+					if dist < 0.6 then
+						currentTool.Grip = baseGrip * getOffsetCFrame()
+					else
+						currentTool.Grip = baseGrip
+					end
+				end
+			else
+				currentTool.Grip = baseGrip * getOffsetCFrame()
+			end
+		end
+	end)
+end
+
+-- Когда инструмент снимается
+local function onUnequipped()
+	if currentTool then
+		currentTool.Grip = baseGrip
+	end
+	stopRender()
+	currentTool = nil
+end
+
+-- Когда инструмент экипируется
+local function onEquipped(tool: Tool)
+	currentTool = tool
+	baseGrip = tool.Grip
+	startRender()
+end
+
+-- Подписка на инструмент
+local function attachTool(tool: Instance)
+	if not tool:IsA("Tool") then return end
+	-- Только один раз подписываемся на Equipped и Unequipped
+	if not equipConns[tool] then
+		equipConns[tool] = {}
+		equipConns[tool].Equipped = tool.Equipped:Connect(function() onEquipped(tool) end)
+		equipConns[tool].Unequipped = tool.Unequipped:Connect(onUnequipped)
+	end
+	if tool.Parent == LocalPlayer.Character then
+		onEquipped(tool)
+	end
+end
+
+-- Обрабатываем все инструменты у персонажа и в рюкзаке
+local function hookAllTools()
+	local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do
+		attachTool(t)
+	end
+	LocalPlayer.Backpack.ChildAdded:Connect(attachTool)
+	char.ChildAdded:Connect(attachTool)
+end
+
+-- Инициализация
+hookAllTools()
+
+-- Повторная инициализация после смерти
+LocalPlayer.CharacterAdded:Connect(function(char)
+	wait(0.1) -- дождаться появления частей
+	hookAllTools()
+end)
+
+-- Toggle смещения
+OtherBox:AddToggle('HideTerrainDeco', {
+	Text = 'LeftHand',
+	Default = false,
+	Tooltip = 'in firstperson',
+	Callback = function(on)
+		offsetPos = Vector3.new(on and 2 or 0, offsetPos.Y, offsetPos.Z)
+		if currentTool then
+			currentTool.Grip = baseGrip * getOffsetCFrame()
+		end
+	end
+})
+
+local Tabs = {
+    ['UI Settings'] = Window:AddTab('UI Settings'),
+}
+
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+
+MenuGroup:AddButton('Unload', function() Library:Unload() end)
+MenuGroup:AddButton('Rejoin', function()
+    -- Сервисы
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local MarketplaceService = game:GetService("MarketplaceService")
 local TeleportService = game:GetService("TeleportService")
 
-servee:AddButton('Rejoin', function()
        local ok, err = pcall(function()
            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
        end)
@@ -2113,108 +1120,9 @@ servee:AddButton('Rejoin', function()
            warn("Rejoin failed:", err)
        end
 end)
-
-local Target = Tabs.Targett:AddLeftGroupbox('Target')
-
--- Services
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
--- функция для списка игроков по алфавиту
-local function GetPlayerNames()
-    local names = {}
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            table.insert(names, plr.Name)
-        end
-    end
-    table.sort(names, function(a, b) return a:lower() < b:lower() end)
-    return names
-end
-
-local SelectedPlayer = nil
-
--- Dropdown игроков
-local PlayerDD = Target:AddDropdown("PlayerList", {
-    Values = GetPlayerNames(),
-    Default = "",
-    Multi = false,
-    Text = "Player Target",
-    Callback = function(value)
-        SelectedPlayer = Players:FindFirstChild(value)
-    end
-})
-
--- авто-обновление списка
-local function RefreshDropdown()
-    local vals = GetPlayerNames()
-    if #vals == 0 then vals = { "<no players>" } end
-    PlayerDD:SetValues(vals)
-end
-Players.PlayerAdded:Connect(RefreshDropdown)
-Players.PlayerRemoving:Connect(RefreshDropdown)
-
--- Toggle: "Spectate" (камера привязывается)
-local FollowToggle = Target:AddToggle("FollowToggle", {
-    Text = "Spectate Target",
-    Default = false,
-    Callback = function(state)
-        if state then
-            if SelectedPlayer and SelectedPlayer.Character and SelectedPlayer.Character:FindFirstChild("Humanoid") then
-                Camera.CameraSubject = SelectedPlayer.Character:FindFirstChild("Humanoid")
-            end
-        else
-            -- возвращаем камеру себе
-            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-                Camera.CameraSubject = LocalPlayer.Character:FindFirstChild("Humanoid")
-            end
-        end
-    end
-})
-
--- Button: телепорт на голову
-Target:AddButton("Teleport To Head", function()
-    if SelectedPlayer and SelectedPlayer.Character and SelectedPlayer.Character:FindFirstChild("Head") 
-       and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        LocalPlayer.Character.HumanoidRootPart.CFrame =
-            SelectedPlayer.Character.Head.CFrame + Vector3.new(0, 2, 0)
-    end
-end)
-
-local FrameTimer = tick()
-local FrameCounter = 0;
-local FPS = 165;
-
-local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
-    FrameCounter += 1;
-
-    if (tick() - FrameTimer) >= 1 then
-        FPS = FrameCounter;
-        FrameTimer = tick();
-        FrameCounter = 0;
-    end;
-
-    Library:SetWatermark(('gamesense.lua | %s fps | %s ms'):format(
-        math.floor(FPS),
-        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
-    ));
-end);
-
-Library.KeybindFrame.Visible = true;
-Library:OnUnload(function()
-    WatermarkConnection:Disconnect()
-
-    print('Unloaded!')
-    Library.Unloaded = true
-end)
-
-local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
-
-MenuGroup:AddButton('Unload', function() Library:Unload() end)
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
 
-Library.ToggleKeybind = Options.MenuKeybind -- Allows you to have a custom keybind for the menu
+Library.ToggleKeybind = Options.MenuKeybind
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
