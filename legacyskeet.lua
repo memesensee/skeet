@@ -1092,7 +1092,7 @@ OtherBox:AddToggle('HideTerrainDeco', {
 	Default = false,
 	Tooltip = 'in firstperson',
 	Callback = function(on)
-		offsetPos = Vector3.new(on and 2 or 0, offsetPos.Y, offsetPos.Z)
+		offsetPos = Vector3.new(on and 3 or 0, offsetPos.Y, offsetPos.Z)
 		if currentTool then
 			currentTool.Grip = baseGrip * getOffsetCFrame()
 		end
