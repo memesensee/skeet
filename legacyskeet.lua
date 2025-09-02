@@ -293,7 +293,7 @@ end
 
 local MiscellaneousBOX = GeneralTab:AddLeftTabbox("Miscellaneous")
 local FieldOfViewBOX = GeneralTab:AddLeftTabbox("Field Of View") do
-    local Main = FieldOfViewBOX:AddTab("Visuals")
+    local Main = FieldOfViewBOX:AddTab("")
     
     Main:AddToggle("Visible", {Text = "Show FOV Circle"}):AddColorPicker("Color", {Default = Color3.fromRGB(54, 57, 241)}):OnChanged(function()
         fov_circle.Visible = Toggles.Visible.Value
@@ -425,11 +425,508 @@ oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
     return oldIndex(self, Index)
 end))
 
-local VisualsBox = Window:AddTab("Visuals")
-local PlayersBOX = VisualsBox:AddLeftTabbox("Players")
-do
-    local Players = PlayersBOX:AddTab("Players")
+-- Переменные для хранения состояния
+local ESPEnabled = false
+local ChamsEnabled = false
+local BoxEnabled = false
+local MaxDistance = 1000
+local Highlights = {}
+local Billboards = {}
+local Boxes = {}
+local ESPPosition = Vector3.new(0, 3, 0) -- По умолчанию над головой
+local ShowNick = true
+local ShowHP = true
+local ShowDistance = true
+local ShowItem = true
+local NickColor = Color3.fromRGB(255, 255, 255)
+local HPColor = Color3.fromRGB(255, 255, 255)
+local DistanceColor = Color3.fromRGB(255, 255, 255)
+local ItemColor = Color3.fromRGB(255, 255, 255)
+local BoxColor = Color3.fromRGB(255, 255, 255)
+
+-- Службы
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Функция для получения предмета в руках
+local function GetHoldingItem(character)
+    if character then
+        local tool = character:FindFirstChildOfClass("Tool")
+        return tool and tool.Name or "None"
+    end
+    return "None"
 end
+
+-- Функция для создания Chams
+local function CreateChams(player)
+    if player ~= LocalPlayer and player.Character then
+        local highlight = Instance.new("Highlight")
+        highlight.Adornee = player.Character
+        highlight.FillColor = Color3.fromRGB(255, 255, 255) -- Дефолт белый
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.FillTransparency = 0.5
+        highlight.OutlineTransparency = 0
+        highlight.Parent = player.Character
+        Highlights[player] = highlight
+    end
+end
+
+-- Функция для удаления Chams
+local function RemoveChams(player)
+    if Highlights[player] then
+        Highlights[player]:Destroy()
+        Highlights[player] = nil
+    end
+end
+
+-- Функция для создания BillboardGui с информацией
+local function CreateESP(player)
+    if player ~= LocalPlayer and player.Character then
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "ESP_Label"
+        local head = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")
+        if not head then return end
+        billboard.Adornee = head
+        billboard.Size = UDim2.new(0, 200, 0, 100)
+        billboard.StudsOffset = ESPPosition
+        billboard.AlwaysOnTop = true
+        billboard.Enabled = false
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Size = UDim2.new(1, 0, 1, 0)
+        textLabel.BackgroundTransparency = 1
+        textLabel.TextStrokeTransparency = 0
+        textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        textLabel.TextSize = 14
+        textLabel.Font = Enum.Font.SourceSans
+        textLabel.TextYAlignment = Enum.TextYAlignment.Top
+        textLabel.Parent = billboard
+        billboard.Parent = player.Character
+
+        -- Обновление информации в реальном времени
+        local connection
+        connection = RunService.RenderStepped:Connect(function()
+            if not player.Character or not player.Character:FindFirstChild("Humanoid") or not Billboards[player] then
+                if connection then connection:Disconnect() end
+                return
+            end
+            local humanoid = player.Character.Humanoid
+            local head = player.Character:FindFirstChild("Head")
+            if not head then
+                billboard.Enabled = false
+                return
+            end
+            local distance = LocalPlayer:DistanceFromCharacter(head.Position)
+            if distance > MaxDistance then
+                billboard.Enabled = false
+                return
+            end
+            billboard.Enabled = true
+            local health = math.floor(humanoid.Health)
+            local maxHealth = humanoid.MaxHealth
+            local healthPercent = math.floor((health / maxHealth) * 100)
+            local item = GetHoldingItem(player.Character)
+
+            local textParts = {}
+            if ShowNick then
+                table.insert(textParts, string.format("<font color='rgb(%d,%d,%d)'>%s</font>", NickColor.R*255, NickColor.G*255, NickColor.B*255, player.Name))
+            end
+            if ShowHP then
+                table.insert(textParts, string.format("<font color='rgb(%d,%d,%d)'>[%d%%]</font>", HPColor.R*255, HPColor.G*255, HPColor.B*255, healthPercent))
+            end
+            if ShowDistance then
+                table.insert(textParts, string.format("<font color='rgb(%d,%d,%d)'>%.1f</font>", DistanceColor.R*255, DistanceColor.G*255, DistanceColor.B*255, distance))
+            end
+            if ShowItem then
+                table.insert(textParts, string.format("<font color='rgb(%d,%d,%d)'>%s</font>", ItemColor.R*255, ItemColor.G*255, ItemColor.B*255, item))
+            end
+
+            textLabel.Text = table.concat(textParts, "\n")
+            textLabel.RichText = true
+        end)
+
+        Billboards[player] = { Billboard = billboard, TextLabel = textLabel, Connection = connection }
+    end
+end
+
+-- Функция для удаления ESP
+local function RemoveESP(player)
+    if Billboards[player] then
+        if Billboards[player].Connection then Billboards[player].Connection:Disconnect() end
+        Billboards[player].Billboard:Destroy()
+        Billboards[player] = nil
+    end
+end
+
+-- Функция для создания Box ESP
+local function CreateBox(player)
+    if player ~= LocalPlayer then
+        if Boxes[player] then
+            Boxes[player]:Remove()
+            Boxes[player] = nil
+        end
+        local box = Drawing.new("Square")
+        box.Visible = false
+        box.Color = BoxColor
+        box.Thickness = 1
+        box.Transparency = 1
+        box.Filled = false
+        Boxes[player] = box
+    end
+end
+
+-- Функция для удаления Box ESP
+local function RemoveBox(player)
+    if Boxes[player] then
+        Boxes[player]:Remove()
+        Boxes[player] = nil
+    end
+end
+
+-- Функция для получения 2D bounding box
+local function get2DBBox(character)
+    local camera = workspace.CurrentCamera
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    local cf, size = character:GetBoundingBox()
+    local x, y, z = size.X / 2, size.Y / 2, size.Z / 2
+    local corners = {
+        Vector3.new(x, y, z),
+        Vector3.new(x, y, -z),
+        Vector3.new(x, -y, z),
+        Vector3.new(x, -y, -z),
+        Vector3.new(-x, y, z),
+        Vector3.new(-x, y, -z),
+        Vector3.new(-x, -y, z),
+        Vector3.new(-x, -y, -z),
+    }
+    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+    local onScreen = false
+    for _, offset in ipairs(corners) do
+        local point = cf * offset
+        local vec, vis = camera:WorldToViewportPoint(point)
+        if vis then
+            onScreen = true
+            minX = math.min(minX, vec.X)
+            minY = math.min(minY, vec.Y)
+            maxX = math.max(maxX, vec.X)
+            maxY = math.max(maxY, vec.Y)
+        end
+    end
+    if not onScreen then return nil end
+    return Vector2.new(minX, minY), Vector2.new(maxX - minX, maxY - minY)
+end
+
+-- Функция для обновления Box ESP
+local boxConnection
+local function updateBoxes()
+    local camera = workspace.CurrentCamera
+    for player, box in pairs(Boxes) do
+        if player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local head = player.Character:FindFirstChild("Head")
+            if head then
+                local distance = LocalPlayer:DistanceFromCharacter(head.Position)
+                if distance > MaxDistance then
+                    box.Visible = false
+                    continue
+                end
+                local pos, size = get2DBBox(player.Character)
+                if pos then
+                    box.Position = pos
+                    box.Size = size
+                    box.Color = BoxColor
+                    box.Visible = true
+                else
+                    box.Visible = false
+                end
+            else
+                box.Visible = false
+            end
+        else
+            box.Visible = false
+        end
+    end
+end
+
+-- Функция для обновления всех ESP
+local function UpdateAllESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if ESPEnabled and player ~= LocalPlayer and player.Character then
+            CreateESP(player)
+        else
+            RemoveESP(player)
+        end
+        if ChamsEnabled and player ~= LocalPlayer and player.Character then
+            CreateChams(player)
+        else
+            RemoveChams(player)
+        end
+        if BoxEnabled and player ~= LocalPlayer and player.Character then
+            CreateBox(player)
+        else
+            RemoveBox(player)
+        end
+    end
+end
+
+local visuals = Window:AddTab("Visuals")
+
+-- Левый Tabbox
+local LeftTabbox = visuals:AddLeftTabbox()
+
+-- Добавляем Tab в левый Tabbox
+local LeftGroupBox = LeftTabbox:AddTab("ESP")
+
+-- Переключатель для ESP
+LeftGroupBox:AddToggle('ESP_Toggle', {
+    Text = 'Enable ESP (Info Over Player)',
+    Default = false,
+    Tooltip = 'Toggles info display over players',
+})
+
+Toggles.ESP_Toggle:OnChanged(function()
+    ESPEnabled = Toggles.ESP_Toggle.Value
+    UpdateAllESP()
+    print('ESP (Info) is now:', ESPEnabled and 'Enabled' or 'Disabled')
+end)
+
+-- Переключатель для Chams
+LeftGroupBox:AddToggle('Chams_Toggle', {
+    Text = 'Enable Chams (Highlight)',
+    Default = false,
+    Tooltip = 'Toggles player highlighting through walls',
+})
+
+Toggles.Chams_Toggle:OnChanged(function()
+    ChamsEnabled = Toggles.Chams_Toggle.Value
+    UpdateAllESP()
+    print('Chams (Highlight) is now:', ChamsEnabled and 'Enabled' or 'Disabled')
+end)
+
+-- Слайдер для прозрачности Chams
+LeftGroupBox:AddSlider('Chams_Transparency', {
+    Text = 'Chams Transparency',
+    Default = 0.5,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Tooltip = 'Adjust transparency of Chams highlights',
+})
+
+Options.Chams_Transparency:OnChanged(function()
+    for _, highlight in pairs(Highlights) do
+        highlight.FillTransparency = Options.Chams_Transparency.Value
+    end
+end)
+
+-- ColorPicker для цвета Chams (прикреплен к Label)
+LeftGroupBox:AddLabel('Chams Color'):AddColorPicker('Chams_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        for _, highlight in pairs(Highlights) do
+            highlight.FillColor = value
+        end
+    end,
+    Tooltip = 'Select color for Chams highlights'
+})
+
+-- Переключатель для Box ESP с ColorPicker
+LeftGroupBox:AddToggle('Box_Toggle', {
+    Text = 'Enable Box ESP',
+    Default = false,
+    Tooltip = 'Toggles box around players',
+})
+
+Toggles.Box_Toggle:OnChanged(function()
+    BoxEnabled = Toggles.Box_Toggle.Value
+    if BoxEnabled then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                CreateBox(player)
+            end
+        end
+        if not boxConnection then
+            boxConnection = RunService.RenderStepped:Connect(updateBoxes)
+        end
+    else
+        if boxConnection then
+            boxConnection:Disconnect()
+            boxConnection = nil
+        end
+        for player in pairs(Boxes) do
+            RemoveBox(player)
+        end
+    end
+    print('Box ESP is now:', BoxEnabled and 'Enabled' or 'Disabled')
+end)
+
+Toggles.Box_Toggle:AddColorPicker('Box_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        BoxColor = value
+    end,
+    Tooltip = 'Select color for box ESP'
+})
+
+-- Правый Tabbox
+local RightTabbox = visuals:AddRightTabbox()
+
+-- Добавляем Tab в правый Tabbox
+local ESPGroupBox = RightTabbox:AddTab("ESP Settings")
+
+-- Слайдер для максимальной дистанции ESP
+ESPGroupBox:AddSlider('Max_Distance', {
+    Text = 'Max ESP Distance',
+    Default = 1000,
+    Min = 0,
+    Max = 5000,
+    Rounding = 0,
+    Tooltip = 'Maximum distance to show ESP',
+})
+
+Options.Max_Distance:OnChanged(function()
+    MaxDistance = Options.Max_Distance.Value
+end)
+
+-- Dropdown для позиции ESP
+ESPGroupBox:AddDropdown('ESP_Position', {
+    Text = 'ESP Position',
+    Default = 'Above Head',
+    Values = {'Above Head', 'Below Feet', 'On Torso'},
+    Tooltip = 'Select position for ESP info',
+})
+
+Options.ESP_Position:OnChanged(function()
+    if Options.ESP_Position.Value == 'Above Head' then
+        ESPPosition = Vector3.new(0, 3, 0)
+    elseif Options.ESP_Position.Value == 'Below Feet' then
+        ESPPosition = Vector3.new(0, -3, 0)
+    elseif Options.ESP_Position.Value == 'On Torso' then
+        ESPPosition = Vector3.new(0, 0, 0)
+    end
+    -- Обновить позиции для существующих ESP
+    for player, data in pairs(Billboards) do
+        if data.Billboard then
+            data.Billboard.StudsOffset = ESPPosition
+        end
+    end
+end)
+
+-- Переключатель для Nick с ColorPicker
+ESPGroupBox:AddToggle('Show_Nick', {
+    Text = 'Show Nick',
+    Default = true,
+    Tooltip = 'Toggle player name display',
+})
+
+Toggles.Show_Nick:OnChanged(function()
+    ShowNick = Toggles.Show_Nick.Value
+end)
+
+Toggles.Show_Nick:AddColorPicker('Nick_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        NickColor = value
+    end,
+    Tooltip = 'Select color for player name'
+})
+
+-- Переключатель для HP с ColorPicker
+ESPGroupBox:AddToggle('Show_HP', {
+    Text = 'Show HP',
+    Default = true,
+    Tooltip = 'Toggle health display',
+})
+
+Toggles.Show_HP:OnChanged(function()
+    ShowHP = Toggles.Show_HP.Value
+end)
+
+Toggles.Show_HP:AddColorPicker('HP_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        HPColor = value
+    end,
+    Tooltip = 'Select color for health'
+})
+
+-- Переключатель для Distance с ColorPicker
+ESPGroupBox:AddToggle('Show_Distance', {
+    Text = 'Show Distance',
+    Default = true,
+    Tooltip = 'Toggle distance display',
+})
+
+Toggles.Show_Distance:OnChanged(function()
+    ShowDistance = Toggles.Show_Distance.Value
+end)
+
+Toggles.Show_Distance:AddColorPicker('Distance_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        DistanceColor = value
+    end,
+    Tooltip = 'Select color for distance'
+})
+
+-- Переключатель для Item с ColorPicker
+ESPGroupBox:AddToggle('Show_Item', {
+    Text = 'Show Item',
+    Default = true,
+    Tooltip = 'Toggle item display',
+})
+
+Toggles.Show_Item:OnChanged(function()
+    ShowItem = Toggles.Show_Item.Value
+end)
+
+Toggles.Show_Item:AddColorPicker('Item_Color', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(value)
+        ItemColor = value
+    end,
+    Tooltip = 'Select color for item'
+})
+
+-- Функция для подписки на CharacterAdded
+local function ConnectCharacter(player)
+    player.CharacterAdded:Connect(function(char)
+        -- Делаем задержку, чтобы персонаж успел полностью загрузиться
+        wait(0.1)
+        if ESPEnabled then
+            CreateESP(player)
+        end
+        if ChamsEnabled then
+            CreateChams(player)
+        end
+        if BoxEnabled then
+            CreateBox(player)
+        end
+    end)
+end
+
+-- Подписываемся на всех существующих игроков
+for _, player in ipairs(Players:GetPlayers()) do
+    ConnectCharacter(player)
+    -- Если у игрока уже есть персонаж
+    if player.Character then
+        if ESPEnabled then CreateESP(player) end
+        if ChamsEnabled then CreateChams(player) end
+        if BoxEnabled then CreateBox(player) end
+    end
+end
+
+-- Подписка на новых игроков
+Players.PlayerAdded:Connect(function(player)
+    ConnectCharacter(player)
+end)
+
+-- Обработка ухода игроков
+Players.PlayerRemoving:Connect(function(player)
+    RemoveESP(player)
+    RemoveChams(player)
+    RemoveBox(player)
+end)
 
 local OtherTab   = Window:AddTab("Other")
 
@@ -980,8 +1477,8 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
-
 -- LocalScript в StarterPlayerScripts
+-- Использует Linoria Lib для UI с группой OtherBox, только тоггл
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -994,9 +1491,9 @@ local renderConn: RBXScriptConnection? = nil
 local equipConns = {}
 local baseGrip = CFrame.new()
 
-local offsetPos = Vector3.new(0, 0, 0)
+local offsetPos = Vector3.new(0, 0, 0) -- Смещение для левой руки
 local offsetRot = Vector3.new(0, 0, 0)
-local onlyFirstPerson = true -- toggle state
+local isLeftHand = false -- Состояние: true - левая, false - правая
 
 -- Получаем смещение в виде CFrame
 local function getOffsetCFrame()
@@ -1020,18 +1517,12 @@ local function startRender()
 	stopRender()
 	renderConn = RunService.RenderStepped:Connect(function()
 		if currentTool and currentTool.Parent == LocalPlayer.Character then
-			if onlyFirstPerson then
-				local head = LocalPlayer.Character:FindFirstChild("Head")
-				if head then
-					local dist = (Camera.CFrame.Position - head.Position).Magnitude
-					if dist < 0.6 then
-						currentTool.Grip = baseGrip * getOffsetCFrame()
-					else
-						currentTool.Grip = baseGrip
-					end
-				end
-			else
+			if LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom then
+				-- Применяем смещение только в первом лице
 				currentTool.Grip = baseGrip * getOffsetCFrame()
+			else
+				-- В других режимах базовая позиция
+				currentTool.Grip = baseGrip
 			end
 		end
 	end)
@@ -1056,7 +1547,6 @@ end
 -- Подписка на инструмент
 local function attachTool(tool: Instance)
 	if not tool:IsA("Tool") then return end
-	-- Только один раз подписываемся на Equipped и Unequipped
 	if not equipConns[tool] then
 		equipConns[tool] = {}
 		equipConns[tool].Equipped = tool.Equipped:Connect(function() onEquipped(tool) end)
@@ -1082,21 +1572,26 @@ hookAllTools()
 
 -- Повторная инициализация после смерти
 LocalPlayer.CharacterAdded:Connect(function(char)
-	wait(0.1) -- дождаться появления частей
+	task.wait(0.1)
 	hookAllTools()
 end)
 
--- Toggle смещения
-OtherBox:AddToggle('HideTerrainDeco', {
-	Text = 'LeftHand',
-	Default = false,
-	Tooltip = 'in firstperson',
-	Callback = function(on)
-		offsetPos = Vector3.new(on and 3 or 0, offsetPos.Y, offsetPos.Z)
-		if currentTool then
-			currentTool.Grip = baseGrip * getOffsetCFrame()
-		end
-	end
+OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
+    Default = 'H',
+    SyncToggleState = false,
+    Mode = 'Toggle',
+    Text = 'Switch Hand',
+    NoUI = false,
+    Callback = function()
+        isLeftHand = not isLeftHand
+        offsetPos = Vector3.new(isLeftHand and 2.9 or 0, offsetPos.Y, offsetPos.Z)
+
+        if currentTool and (LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom) then
+            currentTool.Grip = baseGrip * getOffsetCFrame()
+        end
+
+        Library:Notify(isLeftHand and 'Switched to Left Hand' or 'Switched to Right Hand')
+    end
 })
 
 local Tabs = {
