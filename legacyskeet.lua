@@ -24,7 +24,10 @@ local SilentAimSettings = {
     
     MouseHitPrediction = false,
     MouseHitPredictionAmount = 0.165,
-    HitChance = 100
+    HitChance = 100,
+
+    Autoshot = false,
+    AutoshotDelay = 50
 }
 
 -- variables
@@ -252,12 +255,22 @@ local MainBOX = GeneralTab:AddLeftTabbox("Main") do
     
     Main:AddToggle("aim_Enabled", {Text = "Enabled"}):AddKeyPicker("aim_Enabled_KeyPicker", {Default = "RightAlt", SyncToggleState = true, Mode = "Toggle", Text = "Enabled", NoUI = false});
     Options.aim_Enabled_KeyPicker:OnClick(function()
-        SilentAimSettings.Enabled = not SilentAimSettings.Enabled
-        
-        Toggles.aim_Enabled.Value = SilentAimSettings.Enabled
-        Toggles.aim_Enabled:SetValue(SilentAimSettings.Enabled)
-        
-        mouse_box.Visible = SilentAimSettings.Enabled
+    SilentAimSettings.Enabled = not SilentAimSettings.Enabled
+    
+    Toggles.aim_Enabled.Value = SilentAimSettings.Enabled
+    Toggles.aim_Enabled:SetValue(SilentAimSettings.Enabled)
+    
+    mouse_box.Visible = SilentAimSettings.Enabled
+
+    Library:Notify(SilentAimSettings.Enabled and 'Enable aim' or 'Disable aim')
+end)
+
+    Main:AddToggle("Autoshot", {Text = "Autoshot", Default = SilentAimSettings.Autoshot}):OnChanged(function()
+        SilentAimSettings.Autoshot = Toggles.Autoshot.Value
+    end)
+
+    Main:AddSlider("AutoshotDelay", {Text = "Autoshot Delay (ms)", Min = 0, Max = 1000, Default = SilentAimSettings.AutoshotDelay, Rounding = 0}):OnChanged(function()
+        SilentAimSettings.AutoshotDelay = Options.AutoshotDelay.Value
     end)
     
     Main:AddToggle("TeamCheck", {Text = "Team Check", Default = SilentAimSettings.TeamCheck}):OnChanged(function()
@@ -339,6 +352,21 @@ resume(create(function()
             fov_circle.Position = getMousePosition()
         end
     end)
+end))
+
+resume(create(function()
+    while true do
+        wait()
+        if Toggles.Autoshot.Value and Toggles.aim_Enabled.Value then
+            local Closest = getClosestPlayer()
+            if Closest then
+                mouse1press()
+                wait(0.01)
+                mouse1release()
+                wait(SilentAimSettings.AutoshotDelay / 1000)
+            end
+        end
+    end
 end))
 
 -- hooks
@@ -687,7 +715,6 @@ LeftGroupBox:AddToggle('ESP_Toggle', {
 Toggles.ESP_Toggle:OnChanged(function()
     ESPEnabled = Toggles.ESP_Toggle.Value
     UpdateAllESP()
-    print('ESP (Info) is now:', ESPEnabled and 'Enabled' or 'Disabled')
 end)
 
 -- Переключатель для Chams
@@ -700,7 +727,6 @@ LeftGroupBox:AddToggle('Chams_Toggle', {
 Toggles.Chams_Toggle:OnChanged(function()
     ChamsEnabled = Toggles.Chams_Toggle.Value
     UpdateAllESP()
-    print('Chams (Highlight) is now:', ChamsEnabled and 'Enabled' or 'Disabled')
 end)
 
 -- Слайдер для прозрачности Chams
@@ -757,7 +783,6 @@ Toggles.Box_Toggle:OnChanged(function()
             RemoveBox(player)
         end
     end
-    print('Box ESP is now:', BoxEnabled and 'Enabled' or 'Disabled')
 end)
 
 Toggles.Box_Toggle:AddColorPicker('Box_Color', {
@@ -779,7 +804,7 @@ ESPGroupBox:AddSlider('Max_Distance', {
     Text = 'Max ESP Distance',
     Default = 1000,
     Min = 0,
-    Max = 5000,
+    Max = 9999,
     Rounding = 0,
     Tooltip = 'Maximum distance to show ESP',
 })
@@ -927,6 +952,254 @@ Players.PlayerRemoving:Connect(function(player)
     RemoveChams(player)
     RemoveBox(player)
 end)
+
+-- Правый Tabbox
+local RightTabbbox = visuals:AddLeftTabbox()
+
+-- Добавляем Tab в правый Tabbox
+local Localplayerr = RightTabbbox:AddTab("LocalPlayer")
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local coneColor = Color3.fromRGB(255, 0, 137) -- Начальный цвет
+local conePart = nil -- Хранит текущий конус
+local enabled = false -- Флаг для включения/выключения
+local rainbowEnabled = false -- Флаг для радужного режима
+local rainbowSpeed = 0.5 -- Скорость изменения цвета
+
+-- Функция для создания конуса
+local function createCone(character)
+    if not enabled or not character or not character:FindFirstChild("Head") then return end
+
+    -- Удаляем старый конус, если он есть
+    if conePart and conePart.Parent then
+        conePart:Destroy()
+    end
+
+    local head = character.Head
+
+    -- Создаём конус
+    conePart = Instance.new("Part")
+    conePart.Name = "ChinaHat"
+    conePart.Size = Vector3.new(1, 1, 1)
+    conePart.Color = coneColor
+    conePart.Transparency = 0.3
+    conePart.Anchored = false
+    conePart.CanCollide = false
+
+    local mesh = Instance.new("SpecialMesh", conePart)
+    mesh.MeshType = Enum.MeshType.FileMesh
+    mesh.MeshId = "rbxassetid://1033714"
+    mesh.Scale = Vector3.new(1.7, 1.1, 1.7)
+
+    local weld = Instance.new("Weld")
+    weld.Part0 = head
+    weld.Part1 = conePart
+    weld.C0 = CFrame.new(0, 0.9, 0)
+
+    conePart.Parent = character
+    weld.Parent = conePart
+
+    return conePart
+end
+
+-- Проверяем наличие конуса и обновляем цвет
+local function checkCone()
+    if not enabled or not player.Character then 
+        if conePart and conePart.Parent then
+            conePart:Destroy()
+        end
+        return 
+    end
+    
+    local hatExists = player.Character:FindFirstChild("ChinaHat")
+    if not hatExists then
+        createCone(player.Character)
+    else
+        -- обновляем цвет
+        hatExists.Color = coneColor
+    end
+end
+
+-- Автоматическое пересоздание при респавне
+player.CharacterAdded:Connect(function(character)
+    createCone(character)
+    
+    -- Проверяем конус каждую секунду (на случай удаления)
+    while character and character:IsDescendantOf(game) do
+        checkCone()
+        task.wait(1)
+    end
+end)
+
+-- Если персонаж уже есть при запуске скрипта
+if player.Character then
+    createCone(player.Character)
+end
+
+-- Радужный режим (цикл цветов)
+spawn(function()
+    while true do
+        if rainbowEnabled and enabled then
+            local hue = tick() * rainbowSpeed % 1
+            coneColor = Color3.fromHSV(hue, 1, 1)
+            checkCone()
+        end
+        task.wait(0.05)
+    end
+end)
+
+-- UI Elements
+Localplayerr:AddToggle('EnableChinaHat', {
+    Text = 'Enable China Hat',
+    Default = false,
+    Callback = function(value)
+        enabled = value
+        checkCone()
+    end
+})
+
+Localplayerr:AddLabel('Hat Color'):AddColorPicker('HatColor', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(color)
+        if not rainbowEnabled then
+            coneColor = color
+            checkCone()
+        end
+    end
+})
+
+Localplayerr:AddToggle('RainbowMode', {
+    Text = 'Rainbow Mode',
+    Default = false,
+    Callback = function(value)
+        rainbowEnabled = value
+        if not rainbowEnabled then
+            checkCone()
+        end
+    end
+})
+
+-- Правый Tabbox
+local RightTabbbbox = visuals:AddRightTabbox()
+
+-- Добавляем Tab в правый Tabbox
+local Localplayerrr = RightTabbbbox:AddTab("Crosshair")
+
+local player = game.Players.LocalPlayer
+local mouse = player:GetMouse()
+local runService = game:GetService("RunService")
+
+-- Create ScreenGui
+local gui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+gui.ResetOnSpawn = false
+gui.Name = "CrosshairGui"
+
+-- Function to create a line
+local function createLine(parent, rotation)
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(0, 15, 0, 3) -- короче (было 30, стало 15)
+    line.AnchorPoint = Vector2.new(0.5, 0.5)
+    line.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    line.BorderSizePixel = 1
+    line.BorderColor3 = Color3.fromRGB(0, 0, 0)
+    line.Rotation = rotation
+    line.Parent = parent
+    return line
+end
+
+-- Crosshair container
+local crosshair = Instance.new("Frame")
+crosshair.Size = UDim2.new(0, 150, 0, 150) -- увеличил контейнер для отдалённых линий
+crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+crosshair.BackgroundTransparency = 1
+crosshair.Parent = gui
+
+-- Gap (расстояние от центра)
+local gap = 100
+
+-- Create 4 crosshair lines
+local top = createLine(crosshair, 90)
+top.Position = UDim2.new(0.5, 0, 0, gap)
+
+local bottom = createLine(crosshair, 90)
+bottom.Position = UDim2.new(0.5, 0, 1, -gap)
+
+local left = createLine(crosshair, 0)
+left.Position = UDim2.new(0, gap, 0.5, 0)
+
+local right = createLine(crosshair, 0)
+right.Position = UDim2.new(1, -gap, 0.5, 0)
+
+-- Text label
+local textLabel = Instance.new("TextLabel")
+textLabel.Size = UDim2.new(0, 150, 0, 35)
+textLabel.AnchorPoint = Vector2.new(0.5, 0) -- теперь позиционируется от верха текста
+textLabel.BackgroundTransparency = 1
+textLabel.Font = Enum.Font.GothamBold
+textLabel.TextSize = 22
+textLabel.RichText = true
+textLabel.Text = '<font color="rgb(255,0,0)">vip</font><font color="rgb(255,255,255)">.lol</font>'
+textLabel.TextStrokeTransparency = 0
+textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+textLabel.Position = UDim2.new(0.5, 0, 1, 100) -- ниже кроссхэйра (смещение на 100px)
+textLabel.Parent = gui
+
+-- Animation parameters
+local rotationSpeed = 65 -- крутится быстрее (раньше было 0.5)
+local textOffset = Vector2.new(0, 40) -- текст теперь ниже центра и дальше от линий
+local angle = 0
+local blinkAlpha = 1
+local blinkSpeed = 2
+local isEnabled = false
+
+-- Dynamic VIP color (starts as default red)
+local vipColor = Color3.fromRGB(255, 0, 0)
+
+-- Add elements to the groupbox
+Localplayerrr:AddToggle("CrosshairEnabled", {
+    Text = "Enable Crosshair",
+    Default = false,
+    Callback = function(value)
+        isEnabled = value
+        crosshair.Visible = value
+        textLabel.Visible = value
+    end
+})
+
+-- Add color picker via a chained label (this is the key fix)
+Localplayerrr:AddLabel("Crosshair Color"):AddColorPicker("CrosshairColor", {
+    Default = Color3.fromRGB(255, 0, 0),
+    Callback = function(color)
+        top.BackgroundColor3 = color
+        bottom.BackgroundColor3 = color
+        left.BackgroundColor3 = color
+        right.BackgroundColor3 = color
+        vipColor = color  -- Update the dynamic VIP color
+    end
+})
+
+-- Animation loop
+runService.RenderStepped:Connect(function(dt)
+    if not isEnabled then return end
+
+    angle = angle + rotationSpeed * dt
+    crosshair.Rotation = angle % 360
+
+    local mousePos = Vector2.new(mouse.X, mouse.Y)
+    crosshair.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
+
+    local target = UDim2.new(0, mousePos.X + textOffset.X, 0, mousePos.Y + textOffset.Y)
+    textLabel.Position = textLabel.Position:Lerp(target, 0.1)
+
+    blinkAlpha = blinkAlpha + blinkSpeed * dt
+    local vipTransparency = (math.sin(blinkAlpha) + 1) / 2 * 0.7
+
+    -- Use dynamic VIP color with transparency (this fixes the hardcoded color issue)
+    local r, g, b = math.floor(vipColor.R * 255), math.floor(vipColor.G * 255), math.floor(vipColor.B * 255)
+    textLabel.Text = string.format('<font color="rgb(%d,%d,%d)" transparency="%f">vip</font><font color="rgb(255,255,255)">.lol</font>', r, g, b, vipTransparency)
+end)
+
 
 local OtherTab   = Window:AddTab("Other")
 
@@ -1477,6 +1750,9 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
+OtherBox:AddButton('Instant Proximity Prompt', function()
+game:GetService("ProximityPromptService").PromptButtonHoldBegan:Connect(function(prompt) prompt.HoldDuration = 0 end)
+end)
 -- LocalScript в StarterPlayerScripts
 -- Использует Linoria Lib для UI с группой OtherBox, только тоггл
 
@@ -1494,6 +1770,7 @@ local baseGrip = CFrame.new()
 local offsetPos = Vector3.new(0, 0, 0) -- Смещение для левой руки
 local offsetRot = Vector3.new(0, 0, 0)
 local isLeftHand = false -- Состояние: true - левая, false - правая
+local leftHandOffset = 2.9
 
 -- Получаем смещение в виде CFrame
 local function getOffsetCFrame()
@@ -1584,7 +1861,7 @@ OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
     NoUI = false,
     Callback = function()
         isLeftHand = not isLeftHand
-        offsetPos = Vector3.new(isLeftHand and 2.9 or 0, offsetPos.Y, offsetPos.Z)
+        offsetPos = Vector3.new(isLeftHand and leftHandOffset or 0, offsetPos.Y, offsetPos.Z)
 
         if currentTool and (LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom) then
             currentTool.Grip = baseGrip * getOffsetCFrame()
@@ -1594,11 +1871,28 @@ OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
     end
 })
 
+OtherBox:AddSlider('LeftHandOffset', {
+    Text = 'Left Hand Offset',
+    Default = 2.9,
+    Min = -5,
+    Max = 5,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        leftHandOffset = Value
+        if isLeftHand then
+            offsetPos = Vector3.new(Value, offsetPos.Y, offsetPos.Z)
+        end
+    end
+})
+
 local Tabs = {
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+
+        Library.KeybindFrame.Visible = true;
 
 MenuGroup:AddButton('Unload', function() Library:Unload() end)
 MenuGroup:AddButton('Rejoin', function()
