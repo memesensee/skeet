@@ -354,20 +354,28 @@ resume(create(function()
     end)
 end))
 
-resume(create(function()
-    while true do
-        wait()
-        if Toggles.Autoshot.Value and Toggles.aim_Enabled.Value then
+local autoshotConnection
+local lastShot = 0
+
+Toggles.Autoshot:OnChanged(function()
+    if Toggles.Autoshot.Value then
+        autoshotConnection = RunService.Heartbeat:Connect(function()
+            if not Toggles.aim_Enabled.Value then return end
             local Closest = getClosestPlayer()
-            if Closest then
+            if Closest and tick() - lastShot >= (SilentAimSettings.AutoshotDelay / 1000 + 0.01) then
                 mouse1press()
-                wait(0.01)
+                task.wait(0.01)  -- Время "hold" клика, можно увеличить до 0.05 если не работает
                 mouse1release()
-                wait(SilentAimSettings.AutoshotDelay / 1000)
+                lastShot = tick()
             end
+        end)
+    else
+        if autoshotConnection then
+            autoshotConnection:Disconnect()
+            autoshotConnection = nil
         end
     end
-end))
+end)
 
 -- hooks
 local oldNamecall
@@ -1080,6 +1088,183 @@ Localplayerr:AddToggle('RainbowMode', {
     end
 })
 
+-- Variables
+local playerEnabled = false
+local toolEnabled = false
+local toolMat = "Plastic"
+local toolCol = Color3.fromRGB(255, 0, 0)
+local playerCol = Color3.fromRGB(255, 255, 255)
+
+-- All available Roblox materials, including ForceField
+local Materials = {
+    "Plastic", "SmoothPlastic", "Neon", "Glass", "Wood", "WoodPlanks", "Marble",
+    "Slate", "Concrete", "Granite", "Metal", "DiamondPlate", "Foil", "CorrodedMetal",
+    "Brick", "Pebble", "Sand", "Fabric", "Ice", "ForceField"
+}
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+
+-- =========================
+-- Functions for player (with ForceField material)
+-- =========================
+function applyPlayer()
+    if not Character then return end
+
+    -- Change material and color of all player parts
+    for _, part in pairs(Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Material = Enum.Material.ForceField
+            part.Color = playerCol
+        end
+    end
+end
+
+function resetPlayer()
+    if not Character then return end
+
+    -- Reset to default material and color
+    for _, part in pairs(Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Material = Enum.Material.Plastic
+            part.Color = Color3.fromRGB(255, 255, 255)
+        end
+    end
+end
+
+-- Handle character respawn
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    if playerEnabled then
+        applyPlayer()
+    end
+end)
+
+-- =========================
+-- Functions for tools
+-- =========================
+function applyTool(tool)
+    if not tool:IsA("Tool") then return end
+    for _, part in pairs(tool:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Material = Enum.Material[toolMat]
+            part.Color = toolCol
+        end
+    end
+end
+
+function resetTool(tool)
+    if not tool:IsA("Tool") then return end
+    for _, part in pairs(tool:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Material = Enum.Material.Plastic
+            part.Color = Color3.fromRGB(255, 255, 255)
+        end
+    end
+end
+
+function applyAllTools()
+    -- Apply to tools in Backpack
+    for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+        applyTool(tool)
+    end
+    -- Apply to equipped tool in Character (held item)
+    for _, tool in pairs(Character:GetChildren()) do
+        applyTool(tool)
+    end
+end
+
+function resetTools()
+    -- Reset tools in Backpack
+    for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+        resetTool(tool)
+    end
+    -- Reset equipped tool in Character
+    for _, tool in pairs(Character:GetChildren()) do
+        resetTool(tool)
+    end
+end
+
+-- Handle new tools added to Backpack
+LocalPlayer.Backpack.ChildAdded:Connect(function(child)
+    if toolEnabled then
+        applyTool(child)
+    end
+end)
+
+-- Handle tools equipped (added to Character, i.e., held)
+Character.ChildAdded:Connect(function(child)
+    if toolEnabled and child:IsA("Tool") then
+        applyTool(child)
+    end
+end)
+
+-- =========================
+-- UI Elements (replace "Library" with your actual UI library variable, e.g., "Localplayerr" if that's it – looks like a typo in original)
+-- =========================
+
+-- ForceField on player
+Localplayerr:AddToggle("ForceFieldPlayer", {
+    Text = "ForceField on Player",
+    Default = false,
+    Callback = function(Value)
+        playerEnabled = Value
+        if Value then
+            applyPlayer()
+        else
+            resetPlayer()
+        end
+    end
+})
+
+Localplayerr:AddLabel('Player Color'):AddColorPicker('PlayerColor', {
+    Default = playerCol,
+    Callback = function(Color)
+        playerCol = Color
+        if playerEnabled then
+            applyPlayer()
+        end
+    end
+})
+
+-- Toggle for tools
+Localplayerr:AddToggle("ToolMaterial", {
+    Text = "Tool Material",
+    Default = false,
+    Callback = function(Value)
+        toolEnabled = Value
+        if Value then
+            applyAllTools()
+        else
+            resetTools()
+        end
+    end
+})
+
+-- Dropdown for material selection (now includes ForceField)
+Localplayerr:AddDropdown("ToolMaterialSelect", {
+    Values = Materials,
+    Default = toolMat,
+    Multi = false,
+    Text = "Tool Materials",
+    Callback = function(Option)
+        toolMat = Option
+        if toolEnabled then
+            applyAllTools()
+        end
+    end
+})
+
+Localplayerr:AddLabel('Tool Color'):AddColorPicker('ToolColor', {
+    Default = toolCol,
+    Callback = function(Color)
+        toolCol = Color
+        if toolEnabled then
+            applyAllTools()
+        end
+    end
+})
 -- Правый Tabbox
 local RightTabbbbox = visuals:AddRightTabbox()
 
@@ -1377,6 +1562,7 @@ local flyEnabled = false
 local flySpeed = 30 -- базовая скорость
 local flyBoost = 70 -- с Shift
 local bodyGyro, bodyVel
+local flyConnection
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -1384,82 +1570,120 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
--- toggle fly
-local function toggleFly()
-    flyEnabled = not flyEnabled
+-- disable fly
+local function disableFly()
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    if bodyGyro then
+        bodyGyro:Destroy()
+        bodyGyro = nil
+    end
+    if bodyVel then
+        bodyVel:Destroy()
+        bodyVel = nil
+    end
 
     local character = LocalPlayer.Character
-    if not character then return end
-    local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-    if flyEnabled then
-        humanoid.WalkSpeed = 0
-        humanoid.PlatformStand = true
-
-        bodyGyro = Instance.new("BodyGyro")
-        bodyGyro.P = 9e4
-        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-        bodyGyro.CFrame = humanoidRootPart.CFrame
-        bodyGyro.Parent = humanoidRootPart
-
-        bodyVel = Instance.new("BodyVelocity")
-        bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-        bodyVel.Velocity = Vector3.zero
-        bodyVel.Parent = humanoidRootPart
-
-        RunService.RenderStepped:Connect(function()
-            if not flyEnabled then return end
-            for _, part in ipairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            end
-
-            local moveDir = Vector3.zero
-            local cameraCF = Camera.CFrame
-            local speed = flySpeed
-
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-                moveDir += cameraCF.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-                moveDir -= cameraCF.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-                moveDir -= cameraCF.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-                moveDir += cameraCF.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.E) then
-                moveDir += cameraCF.UpVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
-                moveDir -= cameraCF.UpVector
-            end
-
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-                speed = flyBoost
-            end
-
-            if moveDir.Magnitude > 0 then
-                moveDir = moveDir.Unit * speed
-            end
-
-            bodyGyro.CFrame = cameraCF
-            bodyVel.Velocity = moveDir
-        end)
-    else
-        if bodyGyro then bodyGyro:Destroy() end
-        if bodyVel then bodyVel:Destroy() end
-
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
         if humanoid then
             humanoid.PlatformStand = false
             humanoid.WalkSpeed = 16
         end
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
     end
 end
+
+-- toggle fly
+local function toggleFly(enabled)
+    if enabled == flyEnabled then return end
+    flyEnabled = enabled
+
+    if not enabled then
+        disableFly()
+        return
+    end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoidRootPart then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    humanoid.WalkSpeed = 0
+    humanoid.PlatformStand = true
+
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.P = 9e4
+    bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    bodyGyro.CFrame = humanoidRootPart.CFrame
+    bodyGyro.Parent = humanoidRootPart
+
+    bodyVel = Instance.new("BodyVelocity")
+    bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    bodyVel.Velocity = Vector3.zero
+    bodyVel.Parent = humanoidRootPart
+
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not flyEnabled then return end
+
+        local moveDir = Vector3.zero
+        local cameraCF = Camera.CFrame
+        local speed = flySpeed
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDir += cameraCF.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDir -= cameraCF.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDir -= cameraCF.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDir += cameraCF.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+            moveDir += cameraCF.UpVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+            moveDir -= cameraCF.UpVector
+        end
+
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+            speed = flyBoost
+        end
+
+        if moveDir.Magnitude > 0 then
+            moveDir = moveDir.Unit * speed
+        end
+
+        bodyGyro.CFrame = cameraCF
+        bodyVel.Velocity = moveDir
+    end)
+end
+
+-- Handle respawn
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    if flyEnabled then
+        task.wait(0.1)
+        toggleFly(false)
+        toggleFly(true)
+    end
+end)
 
 -- Fly Speed slider
 SelfTab:AddSlider('FlySpeed', {
@@ -1479,7 +1703,7 @@ SelfTab:AddSlider('FlyBoost', {
     Text = 'Fly Boost (Shift)',
     Default = 70,
     Min = 0,
-    Max = 249,
+    Max = 250,
     Rounding = 0,
     Compact = false,
     Callback = function(Value)
@@ -1487,7 +1711,6 @@ SelfTab:AddSlider('FlyBoost', {
     end
 })
 
--- Fly Keybind (первым идёт)
 SelfTab:AddLabel('Fly Key'):AddKeyPicker('FlyKeybind', {
     Default = 'F2',
     SyncToggleState = true,
@@ -1498,7 +1721,6 @@ SelfTab:AddLabel('Fly Key'):AddKeyPicker('FlyKeybind', {
         toggleFly(Value)
     end
 })
-
 -- // WalkSpeed Boost (TP-style movement)
 local uis = game:GetService("UserInputService")
 local runService = game:GetService("RunService")
@@ -1674,7 +1896,7 @@ OtherBox:AddToggle('HideTerrainDecor', {
     Tooltip = 'nothink',
     Callback = function(on)
         local ok, err = pcall(function()
-            workspace.Terrain.Decoration = not (not on)
+            workspace.Terrain.Decoration = not on
         end)
         if not ok then
             warn("[Linoria] Не удалось изменить Terrain.Decoration: ", err)
@@ -1761,16 +1983,23 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
 -- ====== Состояние
 local currentTool: Tool? = nil
 local renderConn: RBXScriptConnection? = nil
 local equipConns = {}
 local baseGrip = CFrame.new()
+local clonedTool: Instance? = nil
+local originalParts = {}
 
-local offsetPos = Vector3.new(0, 0, 0) -- Смещение для левой руки
-local offsetRot = Vector3.new(0, 0, 0)
+local offsetPos = Vector3.new(0, 0, 0) -- Смещение позиции (X, Y, Z)
+local offsetRot = Vector3.new(0, 0, 0) -- Смещение ротации (X, Y, Z в градусах)
 local isLeftHand = false -- Состояние: true - левая, false - правая
-local leftHandOffset = 2.9
+local isStatic = false -- Состояние: true - статичная рука, false - нормальная
 
 -- Получаем смещение в виде CFrame
 local function getOffsetCFrame()
@@ -1779,6 +2008,41 @@ local function getOffsetCFrame()
 		math.rad(offsetRot.Y), 
 		math.rad(offsetRot.Z)
 	)
+end
+
+-- Очистка статичного режима
+local function cleanupStatic()
+	if clonedTool then
+		clonedTool:Destroy()
+		clonedTool = nil
+	end
+	for desc, props in pairs(originalParts) do
+		if desc:IsDescendantOf(game) then
+			desc.Transparency = props.Transparency
+			desc.CanCollide = props.CanCollide
+		end
+	end
+	originalParts = {}
+end
+
+-- Настройка статичного режима
+local function setupStatic(tool: Tool)
+	cleanupStatic()
+	originalParts = {}
+	for _, desc in ipairs(tool:GetDescendants()) do
+		if desc:IsA("BasePart") or desc:IsA("MeshPart") or desc:IsA("UnionOperation") then
+			originalParts[desc] = {Transparency = desc.Transparency, CanCollide = desc.CanCollide}
+			desc.Transparency = 1
+			desc.CanCollide = false
+		end
+	end
+	clonedTool = tool:Clone()
+	for _, scr in ipairs(clonedTool:GetDescendants()) do
+		if scr:IsA("BaseScript") or scr:IsA("LocalScript") or scr:IsA("ModuleScript") then
+			scr:Destroy()
+		end
+	end
+	clonedTool.Parent = Camera
 end
 
 -- Останавливаем рендер
@@ -1794,7 +2058,15 @@ local function startRender()
 	stopRender()
 	renderConn = RunService.RenderStepped:Connect(function()
 		if currentTool and currentTool.Parent == LocalPlayer.Character then
-			if LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom then
+			local isFirstPerson = LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom
+			if isStatic and isFirstPerson then
+				local offset = getOffsetCFrame()
+				local virtualGrip = Camera.CFrame * offset
+				local handle = clonedTool and clonedTool:FindFirstChild("Handle")
+				if handle then
+					handle.CFrame = virtualGrip * baseGrip
+				end
+			elseif isFirstPerson then
 				-- Применяем смещение только в первом лице
 				currentTool.Grip = baseGrip * getOffsetCFrame()
 			else
@@ -1810,6 +2082,9 @@ local function onUnequipped()
 	if currentTool then
 		currentTool.Grip = baseGrip
 	end
+	if isStatic then
+		cleanupStatic()
+	end
 	stopRender()
 	currentTool = nil
 end
@@ -1818,6 +2093,9 @@ end
 local function onEquipped(tool: Tool)
 	currentTool = tool
 	baseGrip = tool.Grip
+	if isStatic then
+		setupStatic(tool)
+	end
 	startRender()
 end
 
@@ -1861,7 +2139,8 @@ OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
     NoUI = false,
     Callback = function()
         isLeftHand = not isLeftHand
-        offsetPos = Vector3.new(isLeftHand and leftHandOffset or 0, offsetPos.Y, offsetPos.Z)
+        offsetPos = Vector3.new(-offsetPos.X, offsetPos.Y, offsetPos.Z)
+        offsetRot = Vector3.new(offsetRot.X, -offsetRot.Y, -offsetRot.Z)
 
         if currentTool and (LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom) then
             currentTool.Grip = baseGrip * getOffsetCFrame()
@@ -1871,18 +2150,75 @@ OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
     end
 })
 
-OtherBox:AddSlider('LeftHandOffset', {
-    Text = 'Left Hand Offset',
-    Default = 2.9,
+OtherBox:AddSlider('PosX', {
+    Text = 'Position X',
+    Default = 0,
     Min = -5,
     Max = 5,
     Rounding = 1,
     Compact = false,
     Callback = function(Value)
-        leftHandOffset = Value
-        if isLeftHand then
-            offsetPos = Vector3.new(Value, offsetPos.Y, offsetPos.Z)
-        end
+        offsetPos = Vector3.new(Value, offsetPos.Y, offsetPos.Z)
+    end
+})
+
+OtherBox:AddSlider('PosY', {
+    Text = 'Position Y',
+    Default = 0,
+    Min = -5,
+    Max = 5,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        offsetPos = Vector3.new(offsetPos.X, Value, offsetPos.Z)
+    end
+})
+
+OtherBox:AddSlider('PosZ', {
+    Text = 'Position Z',
+    Default = 0,
+    Min = -5,
+    Max = 5,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        offsetPos = Vector3.new(offsetPos.X, offsetPos.Y, Value)
+    end
+})
+
+OtherBox:AddSlider('RotX', {
+    Text = 'Pitch',
+    Default = 0,
+    Min = -180,
+    Max = 180,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        offsetRot = Vector3.new(Value, offsetRot.Y, offsetRot.Z)
+    end
+})
+
+OtherBox:AddSlider('RotY', {
+    Text = 'Yaw',
+    Default = 0,
+    Min = -180,
+    Max = 180,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        offsetRot = Vector3.new(offsetRot.X, Value, offsetRot.Z)
+    end
+})
+
+OtherBox:AddSlider('RotZ', {
+    Text = 'Roll',
+    Default = 0,
+    Min = -180,
+    Max = 180,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        offsetRot = Vector3.new(offsetRot.X, offsetRot.Y, Value)
     end
 })
 
