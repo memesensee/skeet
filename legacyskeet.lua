@@ -248,7 +248,7 @@ local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Window = Library:CreateWindow({Title = 'skeet.lua', Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0})
+local Window = Library:CreateWindow({Title = 'vip.lol', Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0})
 local GeneralTab = Window:AddTab("Combat")
 local MainBOX = GeneralTab:AddLeftTabbox("Main") do
     local Main = MainBOX:AddTab("Main")
