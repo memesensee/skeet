@@ -248,7 +248,7 @@ local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Window = Library:CreateWindow({Title = 'vip.lol', Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0})
+local Window = Library:CreateWindow({Title = 'chinozec.lol', Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0})
 local GeneralTab = Window:AddTab("Combat")
 local MainBOX = GeneralTab:AddLeftTabbox("Main") do
     local Main = MainBOX:AddTab("Main")
@@ -1324,7 +1324,7 @@ textLabel.BackgroundTransparency = 1
 textLabel.Font = Enum.Font.GothamBold
 textLabel.TextSize = 22
 textLabel.RichText = true
-textLabel.Text = '<font color="rgb(255,0,0)">vip</font><font color="rgb(255,255,255)">.lol</font>'
+textLabel.Text = '<font color="rgb(255,0,0)">chinozec</font><font color="rgb(255,255,255)">.lol</font>'
 textLabel.TextStrokeTransparency = 0
 textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 textLabel.Position = UDim2.new(0.5, 0, 1, 100) -- ниже кроссхэйра (смещение на 100px)
@@ -1382,9 +1382,133 @@ runService.RenderStepped:Connect(function(dt)
 
     -- Use dynamic VIP color with transparency (this fixes the hardcoded color issue)
     local r, g, b = math.floor(vipColor.R * 255), math.floor(vipColor.G * 255), math.floor(vipColor.B * 255)
-    textLabel.Text = string.format('<font color="rgb(%d,%d,%d)" transparency="%f">vip</font><font color="rgb(255,255,255)">.lol</font>', r, g, b, vipTransparency)
+    textLabel.Text = string.format('<font color="rgb(%d,%d,%d)" transparency="%f">chinozec</font><font color="rgb(255,255,255)">.lol</font>', r, g, b, vipTransparency)
 end)
 
+-- Сервисы
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+-- Создание прицела
+local player = game.Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local crosshairGui = Instance.new("ScreenGui")
+crosshairGui.Name = "HotlineCrosshair"
+crosshairGui.Parent = playerGui
+crosshairGui.ResetOnSpawn = false
+crosshairGui.IgnoreGuiInset = true
+
+-- Настройки прицела
+local lineLength = 8       -- длина штриха
+local lineThickness = 2    -- толщина
+local innerDist = 0        -- минимальное расстояние между линиями
+local outerDist = 16       -- максимальное расстояние при пульсе
+local pulseSpeed = 0.3     -- скорость пульсации (сек)
+
+-- Создание линий
+local lines = {}
+for _, name in ipairs({"Top", "Bottom", "Left", "Right"}) do
+    local line = Instance.new("Frame")
+    line.Name = name
+    line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    line.BorderSizePixel = 0
+    line.Parent = crosshairGui
+    lines[name] = line
+end
+
+-- Переменные
+local crosshairEnabled = false
+local crosshairColor = Color3.fromRGB(255, 255, 255)
+local currentDist = outerDist
+local pulseConnection
+local followConnection
+
+-- Обновление цвета
+local function updateColor()
+    for _, line in pairs(lines) do
+        line.BackgroundColor3 = crosshairColor
+    end
+end
+
+-- Обновление позиций
+local function updatePositions(mousePos, dist)
+    lines.Top.Size = UDim2.new(0, lineThickness, 0, lineLength)
+    lines.Top.Position = UDim2.new(0, mousePos.X - lineThickness/2, 0, mousePos.Y - dist - lineLength)
+
+    lines.Bottom.Size = UDim2.new(0, lineThickness, 0, lineLength)
+    lines.Bottom.Position = UDim2.new(0, mousePos.X - lineThickness/2, 0, mousePos.Y + dist)
+
+    lines.Left.Size = UDim2.new(0, lineLength, 0, lineThickness)
+    lines.Left.Position = UDim2.new(0, mousePos.X - dist - lineLength, 0, mousePos.Y - lineThickness/2)
+
+    lines.Right.Size = UDim2.new(0, lineLength, 0, lineThickness)
+    lines.Right.Position = UDim2.new(0, mousePos.X + dist, 0, mousePos.Y - lineThickness/2)
+end
+
+-- Пульсация
+local function startPulse()
+    if pulseConnection then return end
+    pulseConnection = task.spawn(function()
+        while crosshairEnabled do
+            local goalDist = (currentDist == outerDist) and innerDist or outerDist
+            local startDist = currentDist
+            local startTime = tick()
+
+            while tick() - startTime < pulseSpeed and crosshairEnabled do
+                local alpha = (tick() - startTime) / pulseSpeed
+                local eased = TweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+                currentDist = startDist + (goalDist - startDist) * eased
+                task.wait()
+            end
+            currentDist = goalDist
+        end
+        pulseConnection = nil
+    end)
+end
+
+-- Следование за мышью
+local function startFollow()
+    if followConnection then return end
+    followConnection = RunService.RenderStepped:Connect(function()
+        if crosshairEnabled then
+            local mousePos = UserInputService:GetMouseLocation()
+            updatePositions(mousePos, currentDist)
+        end
+    end)
+end
+
+Localplayerrr:AddToggle("Crosshair Enabled", {
+    Text = "Hotline Miami Crosshair",
+    Default = false,
+    Callback = function(value)
+        crosshairEnabled = value
+        crosshairGui.Enabled = value
+        if value then
+            currentDist = outerDist
+            updateColor()
+            startPulse()
+            startFollow()
+            UserInputService.MouseIconEnabled = false
+        else
+            pulseConnection = nil
+            UserInputService.MouseIconEnabled = true
+        end
+    end
+})
+
+Localplayerrr:AddLabel("HMC color"):AddColorPicker("Hotline Miami Color", {
+    Default = Color3.fromRGB(255, 0, 0),
+    Callback = function(color)
+        crosshairColor = color
+        updateColor()
+    end
+})
+
+-- Инициализация
+crosshairGui.Enabled = false
+UserInputService.MouseIconEnabled = true
 
 local OtherTab   = Window:AddTab("Other")
 
@@ -1527,6 +1651,61 @@ SelfTab:AddToggle('FakeLagEnabled', {
         fakeLagEnabled = Value
     end
 })
+
+local RunService = game:GetService("RunService")
+local player = game.Players.LocalPlayer
+
+local hrp, humanoid
+local connection -- для хранения RenderStepped
+
+-- Функция включения/выключения Fake AA
+local function setFakeAA(enabled)
+	if enabled then
+		if player.Character then
+			humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+			hrp = player.Character:FindFirstChild("HumanoidRootPart")
+			if humanoid and hrp then
+				humanoid.AutoRotate = false
+				-- Подключаем RenderStepped
+				connection = RunService.RenderStepped:Connect(function()
+					local moveDir = humanoid.MoveDirection
+					if moveDir.Magnitude > 0.01 then
+						local opposite = -moveDir.Unit
+						opposite = Vector3.new(opposite.X, 0, opposite.Z)
+						if opposite.Magnitude > 0.001 then
+							hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + opposite)
+						end
+					end
+				end)
+			end
+		end
+	else
+		-- Отключаем Fake AA
+		if connection then
+			connection:Disconnect()
+			connection = nil
+		end
+		if humanoid then
+			humanoid.AutoRotate = true
+		end
+	end
+end
+
+-- Linoria Toggle
+SelfTab:AddToggle('FakeLagEnabled', {
+	Text = 'Fake aa', 
+	Default = false,
+	Callback = function(Value)
+		setFakeAA(Value)
+	end
+})
+
+-- Подписка на смену персонажа (чтобы работало при respawn)
+player.CharacterAdded:Connect(function(char)
+	humanoid = char:WaitForChild("Humanoid")
+	hrp = char:WaitForChild("HumanoidRootPart")
+end)
+
 
 SelfTab:AddToggle('BunnyHopEnabled', {
     Text = 'Bunny Hop',
@@ -1827,6 +2006,14 @@ local SkyBoxes = {
         Rt = "http://www.roblox.com/asset/?id=48020254",
         Up = "http://www.roblox.com/asset/?id=48020383",
     },
+    ["Green"] = {
+        Bk = "rbxassetid://11941775243",
+        Dn = "rbxassetid://11941774975",
+        Ft = "rbxassetid://11941774655",
+        Lf = "rbxassetid://11941774369",
+        Rt = "rbxassetid://11941774042",
+        Up = "rbxassetid://11941773718",
+    },
     ["Pink"] = {
         Bk = "http://www.roblox.com/asset/?id=271042516",
         Dn = "http://www.roblox.com/asset/?id=271077243",
@@ -1877,8 +2064,8 @@ local function ApplySky(data)
 end
 
 OtherBox:AddDropdown("SkySelector", {
-    Values = {"Night", "Pink", "Moon", "Black"},
-    Default = 1,
+    Values = {"Night", "Green", "Pink", "Moon", "Black"},
+    Default = 5,
     Multi = false,
     Text = "Skybox",
 
@@ -1888,18 +2075,44 @@ OtherBox:AddDropdown("SkySelector", {
 })
 
 -- сразу Night ставим
-ApplySky(SkyBoxes["Night"])
+ApplySky(SkyBoxes["Black"])
+
+local grassFlags = {
+    "FIntFRMMinGrassDistance",
+    "FIntFRMMaxGrassDistance",
+    "FIntRenderGrassDetailStrands",
+    "FIntRenderGrassHeightScaler"
+}
+
+local originalValues = {}
 
 OtherBox:AddToggle('HideTerrainDecor', {
     Text = 'Hide grass',
     Default = false,
-    Tooltip = 'nothink',
+    Tooltip = 'nothing',
     Callback = function(on)
         local ok, err = pcall(function()
-            workspace.Terrain.Decoration = not on
+            if not next(originalValues) then
+                -- Store originals on first toggle
+                for _, flag in ipairs(grassFlags) do
+                    originalValues[flag] = getfflag(flag)
+                end
+            end
+
+            if on then
+                -- Hide: Set all to 0
+                for _, flag in ipairs(grassFlags) do
+                    setfflag(flag, 0)
+                end
+            else
+                -- Show: Restore originals
+                for flag, value in pairs(originalValues) do
+                    setfflag(flag, value)
+                end
+            end
         end)
         if not ok then
-            warn("[Linoria] Не удалось изменить Terrain.Decoration: ", err)
+            warn("[Linoria] Failed to toggle grass visibility: ", err)
         end
     end
 })
@@ -1947,6 +2160,29 @@ OtherBox:AddButton('Unlock camera', function()
     player.CameraMode = Enum.CameraMode.Classic
 end)
 
+-- Предполагается, что Linoria уже инициализирована:
+-- local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/Library.lua"))()
+
+local player = game.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+OtherBox:AddToggle('InvisiCamEnabled', {
+    Text = 'Enable InvisiCam',
+    Default = false,
+    Tooltip = 'Makes walls transparent when blocking view',
+    Callback = function(value)
+        if value then
+            player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+            player.DevComputerCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+            player.DevTouchCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+        else
+            player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
+            player.DevComputerCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
+            player.DevTouchCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
+        end
+    end
+})
+
 local RunService = game:GetService("RunService")
 local Camera = workspace.CurrentCamera
 
@@ -1958,8 +2194,7 @@ OtherBox:AddSlider('FovSlider', {
     Default = fovValue,
     Min = 10,
     Max = 120,
-    Rounding = 0,
-    Compact = false,
+    Rounding = 1,
     Callback = function(Value)
         fovValue = Value
     end
@@ -1973,254 +2208,95 @@ RunService.RenderStepped:Connect(function()
 end)
 
 OtherBox:AddButton('Instant Proximity Prompt', function()
-game:GetService("ProximityPromptService").PromptButtonHoldBegan:Connect(function(prompt) prompt.HoldDuration = 0 end)
-end)
--- LocalScript в StarterPlayerScripts
--- Использует Linoria Lib для UI с группой OtherBox, только тоггл
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
--- ====== Состояние
-local currentTool: Tool? = nil
-local renderConn: RBXScriptConnection? = nil
-local equipConns = {}
-local baseGrip = CFrame.new()
-local clonedTool: Instance? = nil
-local originalParts = {}
-
-local offsetPos = Vector3.new(0, 0, 0) -- Смещение позиции (X, Y, Z)
-local offsetRot = Vector3.new(0, 0, 0) -- Смещение ротации (X, Y, Z в градусах)
-local isLeftHand = false -- Состояние: true - левая, false - правая
-local isStatic = false -- Состояние: true - статичная рука, false - нормальная
-
--- Получаем смещение в виде CFrame
-local function getOffsetCFrame()
-	return CFrame.new(offsetPos) * CFrame.Angles(
-		math.rad(offsetRot.X), 
-		math.rad(offsetRot.Y), 
-		math.rad(offsetRot.Z)
-	)
-end
-
--- Очистка статичного режима
-local function cleanupStatic()
-	if clonedTool then
-		clonedTool:Destroy()
-		clonedTool = nil
-	end
-	for desc, props in pairs(originalParts) do
-		if desc:IsDescendantOf(game) then
-			desc.Transparency = props.Transparency
-			desc.CanCollide = props.CanCollide
-		end
-	end
-	originalParts = {}
-end
-
--- Настройка статичного режима
-local function setupStatic(tool: Tool)
-	cleanupStatic()
-	originalParts = {}
-	for _, desc in ipairs(tool:GetDescendants()) do
-		if desc:IsA("BasePart") or desc:IsA("MeshPart") or desc:IsA("UnionOperation") then
-			originalParts[desc] = {Transparency = desc.Transparency, CanCollide = desc.CanCollide}
-			desc.Transparency = 1
-			desc.CanCollide = false
-		end
-	end
-	clonedTool = tool:Clone()
-	for _, scr in ipairs(clonedTool:GetDescendants()) do
-		if scr:IsA("BaseScript") or scr:IsA("LocalScript") or scr:IsA("ModuleScript") then
-			scr:Destroy()
-		end
-	end
-	clonedTool.Parent = Camera
-end
-
--- Останавливаем рендер
-local function stopRender()
-	if renderConn then
-		renderConn:Disconnect()
-		renderConn = nil
-	end
-end
-
--- Рендерим инструмент каждый кадр
-local function startRender()
-	stopRender()
-	renderConn = RunService.RenderStepped:Connect(function()
-		if currentTool and currentTool.Parent == LocalPlayer.Character then
-			local isFirstPerson = LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom
-			if isStatic and isFirstPerson then
-				local offset = getOffsetCFrame()
-				local virtualGrip = Camera.CFrame * offset
-				local handle = clonedTool and clonedTool:FindFirstChild("Handle")
-				if handle then
-					handle.CFrame = virtualGrip * baseGrip
-				end
-			elseif isFirstPerson then
-				-- Применяем смещение только в первом лице
-				currentTool.Grip = baseGrip * getOffsetCFrame()
-			else
-				-- В других режимах базовая позиция
-				currentTool.Grip = baseGrip
-			end
-		end
-	end)
-end
-
--- Когда инструмент снимается
-local function onUnequipped()
-	if currentTool then
-		currentTool.Grip = baseGrip
-	end
-	if isStatic then
-		cleanupStatic()
-	end
-	stopRender()
-	currentTool = nil
-end
-
--- Когда инструмент экипируется
-local function onEquipped(tool: Tool)
-	currentTool = tool
-	baseGrip = tool.Grip
-	if isStatic then
-		setupStatic(tool)
-	end
-	startRender()
-end
-
--- Подписка на инструмент
-local function attachTool(tool: Instance)
-	if not tool:IsA("Tool") then return end
-	if not equipConns[tool] then
-		equipConns[tool] = {}
-		equipConns[tool].Equipped = tool.Equipped:Connect(function() onEquipped(tool) end)
-		equipConns[tool].Unequipped = tool.Unequipped:Connect(onUnequipped)
-	end
-	if tool.Parent == LocalPlayer.Character then
-		onEquipped(tool)
-	end
-end
-
--- Обрабатываем все инструменты у персонажа и в рюкзаке
-local function hookAllTools()
-	local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-	for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do
-		attachTool(t)
-	end
-	LocalPlayer.Backpack.ChildAdded:Connect(attachTool)
-	char.ChildAdded:Connect(attachTool)
-end
-
--- Инициализация
-hookAllTools()
-
--- Повторная инициализация после смерти
-LocalPlayer.CharacterAdded:Connect(function(char)
-	task.wait(0.1)
-	hookAllTools()
+    game:GetService("ProximityPromptService").PromptButtonHoldBegan:Connect(function(prompt) 
+        prompt.HoldDuration = 0 
+    end)
 end)
 
-OtherBox:AddLabel('Switch Hand'):AddKeyPicker('SwitchHandKey', {
-    Default = 'H',
-    SyncToggleState = false,
-    Mode = 'Toggle',
-    Text = 'Switch Hand',
-    NoUI = false,
-    Callback = function()
-        isLeftHand = not isLeftHand
-        offsetPos = Vector3.new(-offsetPos.X, offsetPos.Y, offsetPos.Z)
-        offsetRot = Vector3.new(offsetRot.X, -offsetRot.Y, -offsetRot.Z)
+-- // Сервисы
+local StarterGui = game:GetService("StarterGui")
+local TextChatService = game:GetService("TextChatService")
+-- // Настройки
+local settings = {
+    ChatPosition = "Up"
+}
+-- // Debounce для предотвращения спама
+local lastUpdateTime = 0
+local DEBOUNCE_TIME = 0.1  -- 100ms задержка
 
-        if currentTool and (LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson or Camera.CameraType == Enum.CameraType.Custom) then
-            currentTool.Grip = baseGrip * getOffsetCFrame()
+local ChatPosDropdown = OtherBox:AddDropdown('ChatPosition', {
+    Values = {'Up', 'Center', 'Down'},
+    Default = 'Up',
+    Multi = false,
+    Text = 'Chat Position',
+})
+
+-- // Функция установки позиции (обновлённая для read-only Position)
+local function SetChatPosition(position)
+    local currentTime = tick()
+    if currentTime - lastUpdateTime < DEBOUNCE_TIME then
+        return
+    end
+    lastUpdateTime = currentTime
+
+    local success = pcall(function()
+        local config = TextChatService:WaitForChild("ChatWindowConfiguration", 5)  -- Ждём config (timeout 5s)
+        if config then
+            -- Новый чат: Только alignments (Position read-only!)
+            config.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            if position == "Up" then
+                config.VerticalAlignment = Enum.VerticalAlignment.Top
+            elseif position == "Center" then
+                config.VerticalAlignment = Enum.VerticalAlignment.Center
+            else  -- Down
+                config.VerticalAlignment = Enum.VerticalAlignment.Bottom
+            end
+        else
+            -- Legacy чат: Точные координаты
+            local viewport = workspace.CurrentCamera.ViewportSize
+            local chatHeight = 250
+            local yOffset = 0
+            local xOffset = 10
+            if position == "Up" then
+                yOffset = 10
+            elseif position == "Center" then
+                yOffset = (viewport.Y / 2) - (chatHeight / 2)
+            else
+                yOffset = viewport.Y - chatHeight - 20
+            end
+            local pos = UDim2.new(0, xOffset, 0, yOffset)
+            StarterGui:SetCore("ChatWindowPosition", pos)
         end
-
-        Library:Notify(isLeftHand and 'Switched to Left Hand' or 'Switched to Right Hand')
+    end)
+    if not success then
+        warn("[Chat Position] Ошибка при смене позиции. Проверь, включён ли TextChatService в игре.")
     end
-})
+end
 
-OtherBox:AddSlider('PosX', {
-    Text = 'Position X',
-    Default = 0,
-    Min = -5,
-    Max = 5,
-    Rounding = 1,
-    Compact = false,
-    Callback = function(Value)
-        offsetPos = Vector3.new(Value, offsetPos.Y, offsetPos.Z)
-    end
-})
+-- // Изменение при выборе в dropdown
+ChatPosDropdown:OnChanged(function(val)
+    settings.ChatPosition = val
+    SetChatPosition(val)
+end)
 
-OtherBox:AddSlider('PosY', {
-    Text = 'Position Y',
-    Default = 0,
-    Min = -5,
-    Max = 5,
-    Rounding = 1,
-    Compact = false,
-    Callback = function(Value)
-        offsetPos = Vector3.new(offsetPos.X, Value, offsetPos.Z)
+-- // Обработка ресайза экрана (только для legacy, alignments auto-адаптируются)
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+    if workspace.CurrentCamera then
+        -- Проверяем, legacy ли (если config не найден)
+        local config = TextChatService:FindFirstChildOfClass("ChatWindowConfiguration")
+        if not config then
+            SetChatPosition(settings.ChatPosition)
+        end
     end
-})
+end)
 
-OtherBox:AddSlider('PosZ', {
-    Text = 'Position Z',
-    Default = 0,
-    Min = -5,
-    Max = 5,
-    Rounding = 1,
-    Compact = false,
-    Callback = function(Value)
-        offsetPos = Vector3.new(offsetPos.X, offsetPos.Y, Value)
-    end
-})
+-- // Изначальная установка с задержкой (чат может грузиться медленно)
+task.wait(2)  -- Ждём 2 секунды
+SetChatPosition(settings.ChatPosition)
 
-OtherBox:AddSlider('RotX', {
-    Text = 'Pitch',
-    Default = 0,
-    Min = -180,
-    Max = 180,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-        offsetRot = Vector3.new(Value, offsetRot.Y, offsetRot.Z)
-    end
-})
-
-OtherBox:AddSlider('RotY', {
-    Text = 'Yaw',
-    Default = 0,
-    Min = -180,
-    Max = 180,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-        offsetRot = Vector3.new(offsetRot.X, Value, offsetRot.Z)
-    end
-})
-
-OtherBox:AddSlider('RotZ', {
-    Text = 'Roll',
-    Default = 0,
-    Min = -180,
-    Max = 180,
-    Rounding = 0,
-    Compact = false,
-    Callback = function(Value)
-        offsetRot = Vector3.new(offsetRot.X, offsetRot.Y, Value)
-    end
-})
+OtherBox:AddButton('Chat history enable', function()
+    game:GetService("TextChatService").ChatWindowConfiguration.Enabled = true
+end)
 
 local Tabs = {
     ['UI Settings'] = Window:AddTab('UI Settings'),
